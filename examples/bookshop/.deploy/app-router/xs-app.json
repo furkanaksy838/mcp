@@ -1,0 +1,17 @@
+{
+  "welcomeFile": "app/vue/index.html",
+  "authenticationMethod": "none",
+  "routes": [
+    {
+      "source": "^/app/(.*)$",
+      "target": "$1",
+      "localDir": "resources",
+      "cacheControl": "no-cache, no-store, must-revalidate"
+    },
+    {
+      "source": "^/(admin|browse|odata|rest|hcql)/",
+      "destination": "srv-api",
+      "csrfProtection": true
+    }
+  ]
+}

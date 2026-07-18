@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title> Capire Books </title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/primitive-ui/dist/css/main.css">
+  <style>
+    .hovering tr:hover td { color:cyan; background: #123; cursor: pointer; }
+    .succeeded { color:teal; padding-right: 11px; }
+    .failed { color:red; padding-right: 11px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+
+<body class="small-container", style="margin-top: 70px;">
+  <div id='app'>
+
+    <h1> Capire Books </h1>
+
+    <input type="text" placeholder="Search..." @input="fetch($event.target.value)">
+
+    <table class="hovering">
+      <thead>
+        <th> Book </th>
+        <th> Author </th>
+        <th> Genre </th>
+        <th> Rating </th>
+        <th> Price </th>
+      </thead>
+      <tr v-for="b,i in books" @click="inspect(i)">
+        <td>{{ b.title }}</td>
+        <td>{{ b.author }}</td>
+        <td>{{ b.genre }}</td>
+        <td>{{ stars[ b.rating ? Math.round(b.rating) : 1+(4-i)%5 ] }} ({{ b.reviews||b.ID%49 }}) </td>
+        <td>{{ b.currency }} {{ b.price }}</td>
+      </tr>
+    </table>
+
+    <div v-if="details">
+      <label style="text-align:right">
+        <span :class="order"> {{ order.succeeded || order.failed }} </span>
+        <span  class="stock"> {{ details.stock }} in stock </span>
+      </label>
+      <form @submit.prevent="submitOrder" style="float:right; display:flex; flex-direction:row-reverse">
+        <input type="number" v-model="order.quantity" v-bind:class="{ failed: order.failed }" style="width:5em">
+        <input type="submit" value="Order:" class="muted-button">
+      </form>
+      <h4> {{ details.title }} </h4>
+      <p> {{ details.descr }} </p>
+    </div>
+    <div v-else>
+      ( click on a row to see details... )
+    </div>
+
+  </div>
+
+  <div id="user-info" style="font-style: italic; position: absolute; bottom: 10px; right: 20px;">
+  </div>
+
+</body>
+</html>

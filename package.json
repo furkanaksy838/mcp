@@ -1,0 +1,38 @@
+{
+  "name": "cap-mcp-guard",
+  "version": "0.1.0",
+  "description": "The trust layer for AI agents accessing SAP CAP business data — request interception, policy enforcement, field masking, and OpenTelemetry-native observability for MCP-enabled applications.",
+  "main": "lib/index.js",
+  "files": [
+    "lib",
+    "cds-plugin.js"
+  ],
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": [
+    "cap",
+    "sap",
+    "mcp",
+    "ai-agent",
+    "policy",
+    "opentelemetry"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@sap/cds": ">=7"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/examples/"
+    ]
+  }
+}
