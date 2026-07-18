@@ -1,0 +1,10 @@
+mode: enforce
+
+entities:
+  CatalogService.Books:
+    mask: [descr]
+    maxRows: 50
+    allowTools: [ReadBooks]
+
+  AdminService.Authors:
+    mask: [dateOfDeath]
