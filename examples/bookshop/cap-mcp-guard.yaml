@@ -1,8 +1,12 @@
-mode: enforce
+# Shipped in "observe" mode on purpose: cds-plugin.js auto-loads this file
+# for every test/run in this example, and a fresh checkout shouldn't start
+# silently masking fields. The masking test files under test/ switch to
+# "enforce" explicitly to demonstrate the difference.
+mode: observe
 
 entities:
   CatalogService.Books:
-    mask: [descr]
+    mask: [descr, price]
     maxRows: 50
     allowTools: [ReadBooks]
 

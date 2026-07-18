@@ -123,4 +123,84 @@ describe('attachInterceptor', () => {
     attachInterceptor(srv, {});
     await expect(srv.simulateRequest({ event: 'READ' }, [])).resolves.toBeUndefined();
   });
+
+  describe('with a policyDefinition (M4 wiring)', () => {
+    const policyDefinition = {
+      mode: 'enforce',
+      entities: { Orders: { mask: ['CreditCard'] } }
+    };
+
+    test('enforce mode masks the fields named in the Decision, on the real response', async () => {
+      const srv = createFakeService();
+      attachInterceptor(srv, { policyDefinition });
+
+      const results = [{ ID: 1, CreditCard: '4111-...' }, { ID: 2, CreditCard: '5500-...' }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Orders' }, results);
+
+      expect(results).toEqual([
+        { ID: 1, CreditCard: '***MASKED***' },
+        { ID: 2, CreditCard: '***MASKED***' }
+      ]);
+    });
+
+    test('observe mode computes a Decision but never touches the response', async () => {
+      const srv = createFakeService();
+      const onDecision = jest.fn();
+      attachInterceptor(srv, { policyDefinition: { ...policyDefinition, mode: 'observe' }, onDecision });
+
+      const results = [{ ID: 1, CreditCard: '4111-...' }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Orders' }, results);
+
+      expect(results).toEqual([{ ID: 1, CreditCard: '4111-...' }]);
+      expect(onDecision).toHaveBeenCalledTimes(1);
+      expect(onDecision.mock.calls[0][0].mode).toBe('observe');
+      expect(onDecision.mock.calls[0][0].fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    test('onDecision is called with the Decision in both enforce and observe mode', async () => {
+      const srv = createFakeService();
+      const onDecision = jest.fn();
+      attachInterceptor(srv, { policyDefinition, onDecision });
+
+      const req = { event: 'READ', entity: 'Orders' };
+      const results = [{ ID: 1, CreditCard: '4111-...' }];
+      await srv.simulateRequest(req, results);
+
+      expect(onDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'enforce', allowed: true, fieldsToMask: ['CreditCard'], entity: 'Orders' }),
+        req
+      );
+    });
+
+    test('entity not covered by the policy is left completely untouched', async () => {
+      const srv = createFakeService();
+      const onDecision = jest.fn();
+      attachInterceptor(srv, { policyDefinition, onDecision });
+
+      const results = [{ ID: 1, CreditCard: '4111-...' }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Books' }, results);
+
+      expect(results).toEqual([{ ID: 1, CreditCard: '4111-...' }]);
+      expect(onDecision.mock.calls[0][0].fieldsToMask).toEqual([]);
+    });
+
+    test('does not evaluate policy or call onDecision when no policyDefinition is given', async () => {
+      const srv = createFakeService();
+      const onDecision = jest.fn();
+      attachInterceptor(srv, { onDecision });
+
+      await srv.simulateRequest({ event: 'READ', entity: 'Orders' }, [{ ID: 1, CreditCard: '4111-...' }]);
+
+      expect(onDecision).not.toHaveBeenCalled();
+    });
+
+    test('never throws when onDecision is not a function', async () => {
+      const srv = createFakeService();
+      attachInterceptor(srv, { policyDefinition });
+
+      await expect(
+        srv.simulateRequest({ event: 'READ', entity: 'Orders' }, [{ ID: 1, CreditCard: 'x' }])
+      ).resolves.toBeUndefined();
+    });
+  });
 });
