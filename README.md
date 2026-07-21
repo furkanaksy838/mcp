@@ -96,6 +96,44 @@ entities:
 
 All three run independently and can each be disabled per-call (`audit: false`, `otel: false`) if you're wiring `registerCapMcpGuard` yourself instead of relying on auto-discovery.
 
+## OData
+
+`registerCapMcpGuard` hooks CAP's own `before`/`after` service events, which only exists inside a Node CAP process. A lot of business data reaches an MCP agent over OData without ever passing through those hooks — a plain OData V2/V4 service, a CAP Java service, or an on-prem SAP Gateway/S/4HANA system fronted by a proxy route. `odataMcpGuard` runs the same Context → Decision → mask/audit/OTel pipeline against raw OData HTTP traffic instead, using one `cap-mcp-guard.yaml`:
+
+```js
+const express = require('express');
+const { odataMcpGuard } = require('cap-mcp-guard');
+
+const app = express();
+app.use('/odata', odataMcpGuard(), proxyToYourODataBackend);
+```
+
+- Mount it in front of any route that responds via `res.json(body)` — your own OData handler, or a reverse-proxy route rewriting a remote OData service's response.
+- Entity names are resolved from the URL path (`/odata/v4/browse/Books(201)` → `Books`), so `cap-mcp-guard.yaml` keys entities by the same name whichever adapter is in front of them. HTTP methods map onto the same operation vocabulary CAP requests use (`GET`→`READ`, `POST`→`CREATE`, `PUT`/`PATCH`→`UPDATE`, `DELETE`→`DELETE`), so `allowTools` rules are portable too.
+- **`$expand` is masked too.** `?$expand=author` on a `Books` read pulls the related `Author` row inline — without any extra config, its fields are masked under an `author` entity entry; nested `$expand=genre($expand=parent)` is masked at every level. One audit/OTel entry is produced per entity in the response (root + each expanded nav), not just one per HTTP request.
+- **Pass real `$metadata` for exact entity resolution.** By default, entity names are guessed from the URL/nav-property text itself (`Books(201)/author` → `author`, not the real target entity). Pass `metadataXml` (an already-fetched `$metadata` EDMX/CSDL document — this module never fetches it itself) or a pre-parsed `edm` (see `lib/core/edm.js`), and both deep paths and `$expand` resolve through the real navigation properties instead (`Books(201)/author` → `Authors`):
+
+  ```js
+  const metadataXml = fs.readFileSync('./service.edmx', 'utf8'); // or fetch it once at startup
+  app.use('/odata', odataMcpGuard({ metadataXml }), proxyToYourODataBackend);
+  ```
+
+- **`$batch` is decoded too, both wire formats** — each sub-request inside a batch is masked/audited/traced individually, exactly like a standalone request:
+  - **OData V4 JSON batch** (`{ requests: [...] }` request / `{ responses: [...] }` response) needs `req.body` to already be the parsed request JSON — mount a JSON body-parser (`express.json()`) before this middleware.
+  - **Classic OData V2 `multipart/mixed` batch** (including changesets — grouped write operations) needs `req.body` to already be the *raw* request body, and goes out via `res.send(rawBody)` rather than `res.json()`:
+
+    ```js
+    const express = require('express');
+    app.use(
+      '/sap/opu/odata',
+      express.raw({ type: 'multipart/mixed' }), // populates req.body for $batch requests
+      odataMcpGuard(),
+      proxyToYourODataBackend
+    );
+    ```
+
+  If a batch can't be decoded either way (missing/wrong `req.body`, no boundary, malformed MIME), it still produces one Context/Decision/audit entry (with an undefined entity) so it isn't silently unaccounted for — it's just unmasked.
+
 ## Try it
 
 A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, with `cap-mcp-guard` wired in and a `cap-mcp-guard.yaml` masking real fields on `CatalogService.Books`.
@@ -113,7 +151,6 @@ npm start   # boots a real server at localhost:4004 — flip cap-mcp-guard.yaml 
 - `@mcp.policy`-style CDS annotations as an alternative to `cap-mcp-guard.yaml`
 - Approval workflows (human-in-the-loop for sensitive operations)
 - Rate limiting and a dashboard UI
-- Adapters for frameworks other than CAP
 - Actually blocking a request when `allowTools`/`maxRows` is violated (today those are computed and reported, not enforced)
 
 ## Development
