@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "The trust layer for AI agents accessing SAP CAP business data — request interception, policy enforcement, field masking, and OpenTelemetry-native observability for MCP-enabled applications.",
   "main": "lib/index.js",
+  "author": "Furkan Aksoy <furkanaksy838@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/furkanaksy838/mcp.git"
+  },
+  "homepage": "https://github.com/furkanaksy838/mcp#readme",
+  "bugs": {
+    "url": "https://github.com/furkanaksy838/mcp/issues"
+  },
   "files": [
     "lib",
     "cds-plugin.js"
