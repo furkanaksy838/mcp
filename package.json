@@ -1,6 +1,6 @@
 {
   "name": "cap-mcp-guard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The trust layer for AI agents accessing SAP CAP business data — request interception, policy enforcement, field masking, and OpenTelemetry-native observability for MCP-enabled applications.",
   "main": "lib/index.js",
   "author": "Furkan Aksoy <furkanaksy838@gmail.com>",
