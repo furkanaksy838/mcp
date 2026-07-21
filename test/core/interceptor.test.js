@@ -157,7 +157,7 @@ describe('attachInterceptor', () => {
       expect(onDecision.mock.calls[0][0].fieldsToMask).toEqual(['CreditCard']);
     });
 
-    test('onDecision is called with the Decision in both enforce and observe mode', async () => {
+    test('onDecision is called with the Decision, the Context it came from, and req', async () => {
       const srv = createFakeService();
       const onDecision = jest.fn();
       attachInterceptor(srv, { policyDefinition, onDecision });
@@ -168,6 +168,7 @@ describe('attachInterceptor', () => {
 
       expect(onDecision).toHaveBeenCalledWith(
         expect.objectContaining({ mode: 'enforce', allowed: true, fieldsToMask: ['CreditCard'], entity: 'Orders' }),
+        expect.objectContaining({ entity: 'Orders', operation: 'READ' }),
         req
       );
     });

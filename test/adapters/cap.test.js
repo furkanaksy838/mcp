@@ -41,13 +41,19 @@ function createFakeCds(root, services) {
 
 describe('registerCapMcpGuard', () => {
   let tmpDir;
+  let logSpy;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-mcp-guard-adapter-'));
+    // Audit logging is on by default (see the describe block below); mute
+    // it here so unrelated tests don't spam console output, and so the
+    // dedicated audit tests can assert against it explicitly.
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    logSpy.mockRestore();
   });
 
   test('loads cap-mcp-guard.yaml from cds.root and enforces it on served services', async () => {
@@ -124,5 +130,81 @@ describe('registerCapMcpGuard', () => {
       registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} } });
       cds.fireServed();
     }).not.toThrow();
+  });
+
+  describe('audit logging (M5)', () => {
+    test('logs an audit entry to stdout by default for every request', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} } });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      const entry = JSON.parse(logSpy.mock.calls[0][0]);
+      expect(entry.context.entity).toBe('Orders');
+      expect(entry.decision.mode).toBe('observe');
+    });
+
+    test('also appends to options.audit.filePath when given', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      const auditFile = path.join(tmpDir, 'audit.log');
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: { mode: 'observe', entities: {} },
+        audit: { filePath: auditFile }
+      });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).context.entity).toBe('Orders');
+    });
+
+    test('options.audit: false disables audit logging entirely', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} }, audit: false });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    test('a caller-supplied onDecision still runs alongside the built-in audit log', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      const onDecision = jest.fn();
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} }, onDecision });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(onDecision).toHaveBeenCalledTimes(1);
+      expect(onDecision.mock.calls[0][0].mode).toBe('observe');
+    });
+
+    test('options.audit: false still runs a caller-supplied onDecision directly', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      const onDecision = jest.fn();
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} }, audit: false, onDecision });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(onDecision).toHaveBeenCalledTimes(1);
+    });
   });
 });
