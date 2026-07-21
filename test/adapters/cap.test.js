@@ -4,6 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { trace } = require('@opentelemetry/api');
+const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+
 const { registerCapMcpGuard } = require('../../lib/adapters/cap');
 
 /** Minimal duck-typed CAP service — no @sap/cds involved. */
@@ -204,6 +207,86 @@ describe('registerCapMcpGuard', () => {
       await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
 
       expect(logSpy).not.toHaveBeenCalled();
+      expect(onDecision).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('OTel span export (M6)', () => {
+    let memoryExporter;
+    let provider;
+
+    beforeEach(() => {
+      memoryExporter = new InMemorySpanExporter();
+      provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(memoryExporter)] });
+      trace.setGlobalTracerProvider(provider);
+    });
+
+    afterEach(async () => {
+      memoryExporter.reset();
+      await provider.shutdown();
+      trace.disable();
+    });
+
+    test('exports a span to the globally registered OTel SDK by default, for every request', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} } });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      const spans = memoryExporter.getFinishedSpans();
+      expect(spans).toHaveLength(1);
+      expect(spans[0].name).toBe('READ Orders');
+    });
+
+    test('options.otel: false disables span export entirely', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} }, otel: false });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(memoryExporter.getFinishedSpans()).toHaveLength(0);
+    });
+
+    test('an injected options.otel.tracer is used instead of the global tracer', async () => {
+      const customExporter = new InMemorySpanExporter();
+      const customProvider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(customExporter)] });
+      const customTracer = customProvider.getTracer('custom');
+
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: { mode: 'observe', entities: {} },
+        otel: { tracer: customTracer }
+      });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(memoryExporter.getFinishedSpans()).toHaveLength(0);
+      expect(customExporter.getFinishedSpans()).toHaveLength(1);
+
+      await customProvider.shutdown();
+    });
+
+    test('audit logging, OTel export, and a caller-supplied onDecision all run together', async () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      const onDecision = jest.fn();
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} }, onDecision });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(memoryExporter.getFinishedSpans()).toHaveLength(1);
       expect(onDecision).toHaveBeenCalledTimes(1);
     });
   });
