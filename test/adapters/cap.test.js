@@ -42,6 +42,11 @@ function createFakeCds(root, services) {
   };
 }
 
+/** Writes a package.json with a "cap-mcp-guard" key into tmpDir. */
+function writeConfig(tmpDir, capMcpGuardConfig) {
+  fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ name: 'fixture', 'cap-mcp-guard': capMcpGuardConfig }));
+}
+
 describe('registerCapMcpGuard', () => {
   let tmpDir;
   let logSpy;
@@ -59,11 +64,8 @@ describe('registerCapMcpGuard', () => {
     logSpy.mockRestore();
   });
 
-  test('loads cap-mcp-guard.yaml from cds.root and enforces it on served services', async () => {
-    fs.writeFileSync(
-      path.join(tmpDir, 'cap-mcp-guard.yaml'),
-      'mode: enforce\nentities:\n  Orders:\n    mask: [CreditCard]\n'
-    );
+  test('loads the "cap-mcp-guard" key from package.json at cds.root and enforces it on served services', async () => {
+    writeConfig(tmpDir, { mode: 'enforce', entities: { Orders: { mask: ['CreditCard'] } } });
 
     const Orders = createFakeService();
     const cds = createFakeCds(tmpDir, { Orders });
@@ -97,19 +99,16 @@ describe('registerCapMcpGuard', () => {
     }
   });
 
-  test('propagates the error when the config file exists but has malformed YAML', () => {
-    fs.writeFileSync(path.join(tmpDir, 'cap-mcp-guard.yaml'), 'mode: [unclosed');
+  test('propagates the error when package.json exists but has malformed JSON', () => {
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), '{ invalid json');
 
     const cds = createFakeCds(tmpDir, {});
 
     expect(() => registerCapMcpGuard(cds)).toThrow(/^Failed to parse /);
   });
 
-  test('an explicit options.policyDefinition takes precedence over the file on disk', async () => {
-    fs.writeFileSync(
-      path.join(tmpDir, 'cap-mcp-guard.yaml'),
-      'mode: enforce\nentities:\n  Orders:\n    mask: [CreditCard]\n'
-    );
+  test('an explicit options.policyDefinition takes precedence over the config on disk', async () => {
+    writeConfig(tmpDir, { mode: 'enforce', entities: { Orders: { mask: ['CreditCard'] } } });
 
     const Orders = createFakeService();
     const cds = createFakeCds(tmpDir, { Orders });
@@ -133,6 +132,92 @@ describe('registerCapMcpGuard', () => {
       registerCapMcpGuard(cds, { policyDefinition: { mode: 'observe', entities: {} } });
       cds.fireServed();
     }).not.toThrow();
+  });
+
+  describe('policyDefinition.services allowlist', () => {
+    test('attaches only to services named in "services", leaving others completely untouched', async () => {
+      const Orders = createFakeService();
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders, Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: { Orders: { mask: ['CreditCard'] }, Customers: { mask: ['IBAN'] } },
+          services: ['Orders']
+        }
+      });
+      cds.fireServed();
+
+      const orderResults = [{ ID: 1, CreditCard: '4111-...' }];
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, orderResults);
+      expect(orderResults).toEqual([{ ID: 1, CreditCard: '***MASKED***' }]);
+
+      const customerResults = [{ ID: 1, IBAN: 'DE00-...' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, customerResults);
+      expect(customerResults).toEqual([{ ID: 1, IBAN: 'DE00-...' }]);
+      expect(logSpy).toHaveBeenCalledTimes(1); // only Orders' audit entry — Customers was never attached to
+    });
+
+    test('attaches to every served service when "services" is omitted (default, unchanged behavior)', async () => {
+      const Orders = createFakeService();
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders, Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: { mode: 'enforce', entities: { Customers: { mask: ['IBAN'] } } }
+      });
+      cds.fireServed();
+
+      const customerResults = [{ ID: 1, IBAN: 'DE00-...' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, customerResults);
+      expect(customerResults).toEqual([{ ID: 1, IBAN: '***MASKED***' }]);
+    });
+  });
+
+  describe('policyDefinition.users allowlist (same service, different identities)', () => {
+    test('the AI technical user gets masked data; a human UI user on the SAME service gets real data', async () => {
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: { Customers: { mask: ['IBAN'] } },
+          users: ['mcp-agent-technical-user']
+        }
+      });
+      cds.fireServed();
+
+      const aiResults = [{ ID: 1, IBAN: 'DE89370400440532013000' }];
+      await Customers.simulateRead(
+        { event: 'READ', entity: 'Customers', user: { id: 'mcp-agent-technical-user' } },
+        aiResults
+      );
+      expect(aiResults).toEqual([{ ID: 1, IBAN: '***MASKED***' }]);
+
+      const uiResults = [{ ID: 1, IBAN: 'DE89370400440532013000' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers', user: { id: 'ayse@sirket.com' } }, uiResults);
+      expect(uiResults).toEqual([{ ID: 1, IBAN: 'DE89370400440532013000' }]);
+    });
+
+    test('a request with no authenticated user at all is passed through when "users" is set', async () => {
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: { Customers: { mask: ['IBAN'] } },
+          users: ['mcp-agent-technical-user']
+        }
+      });
+      cds.fireServed();
+
+      const results = [{ ID: 1, IBAN: 'DE89370400440532013000' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, results);
+      expect(results).toEqual([{ ID: 1, IBAN: 'DE89370400440532013000' }]);
+    });
   });
 
   describe('audit logging (M5)', () => {

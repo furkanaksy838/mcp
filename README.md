@@ -1,5 +1,7 @@
 # cap-mcp-guard
 
+**A CAP (CDS) plugin** — auto-discovered via `cds-plugin.js` the moment it's a dependency of your project, zero manual wiring required.
+
 CAP MCP Guard is the trust layer for AI agents accessing SAP CAP business data — request interception, policy enforcement, field masking, and OpenTelemetry-native observability for MCP-enabled applications.
 
 Today, organizations have only two options when exposing SAP CAP business data to AI agents: grant unrestricted access or deny access completely. CAP MCP Guard introduces a third option — controlled, observable, and policy-driven access, without requiring developers to hand-write authorization, masking, and audit logic for every entity.
@@ -53,40 +55,96 @@ Claude / Joule / Copilot / Custom Agent
          CAP Service
 ```
 
-`lib/policy/` and `lib/core/context.js` never import `@sap/cds` — they only ever see a plain `Context` object and a plain `PolicyDefinition` object, regardless of where either one came from. That's what lets `cap-mcp-guard.yaml` be swapped out for a future CDS-annotation-based source later without touching the engine itself.
+`lib/policy/` and `lib/core/context.js` never import `@sap/cds` — they only ever see a plain `Context` object and a plain `PolicyDefinition` object, regardless of where either one came from. That's what lets the `"cap-mcp-guard"` package.json config be swapped out for a future CDS-annotation-based source later without touching the engine itself.
 
 ## Install
 
 ```bash
-npm install --save-dev cap-mcp-guard
+npm install --save cap-mcp-guard
 ```
 
-CAP auto-discovers `cds-plugin.js` the moment the package is a dependency of your project — no wiring required. Drop a `cap-mcp-guard.yaml` in your project root and it's picked up automatically the next time your CAP server starts.
+This is a **CDS plugin**, not a library you wire up by hand: CAP auto-discovers `cds-plugin.js` the moment the package is a dependency of your project — no manual `require`, no server bootstrap changes. Add a `"cap-mcp-guard"` key to your project's `package.json` and it's picked up automatically the next time your CAP server starts.
 
 ## Configure
 
-```yaml
-# cap-mcp-guard.yaml
-mode: enforce   # or: observe (dry-run — logs/traces what would happen, blocks nothing)
-
-entities:
-  Orders:
-    mask:
-      - CreditCard
-      - Salary
-    maxRows: 100
-    allowTools:
-      - ReadOrders
-
-  Customers:
-    mask:
-      - Email
-      - Phone
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "entities": {
+      "Orders": {
+        "mask": ["CreditCard", "Salary"],
+        "maxRows": 100,
+        "allowTools": ["ReadOrders"]
+      },
+      "Customers": {
+        "mask": ["Email", "Phone"]
+      }
+    }
+  }
+}
 ```
 
 - Entities not listed here are fully accessible — this is opt-in by design; you don't have to configure every entity up front.
-- No config file at all? The guard runs in pass-through mode (a `console.warn` tells you so) rather than crashing your server.
-- A config file that exists but fails to parse *does* fail loudly — a broken config shouldn't fail silently.
+- No `"cap-mcp-guard"` key at all? The guard runs in pass-through mode (a `console.warn` tells you so) rather than crashing your server.
+- A config that exists but fails to parse *does* fail loudly — a broken config shouldn't fail silently.
+
+### Scoping the guard to specific services
+
+If the same entities are served both to a human-facing UI and to an AI/MCP agent, masking
+everything is usually wrong — the UI would see masked fields too. Add a `"services"` array
+to scope the guard to only the CAP services named there; every other served service is left
+completely untouched (no masking, no audit, no interceptor at all):
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "services": ["AgentCatalogService"],
+    "entities": {
+      "Customers": { "mask": ["IBAN"] }
+    }
+  }
+}
+```
+
+The recommended pattern: expose the AI/MCP-facing traffic through its own CDS service (a
+projection over the same entities your UI's service already serves), point `"services"` at
+that one, and leave your UI's service out of the list entirely — it keeps seeing real,
+unmasked data. Omitting `"services"` keeps the default: every served service is guarded, as
+before.
+
+### Scoping the guard to specific users
+
+If splitting into a second CDS service isn't worth it, scope the guard by **identity**
+instead, using CAP's own authenticated user (`req.user.id`, not a client-supplied header —
+so it can't be spoofed the way a raw HTTP header could). Add a `"users"` array: masking (and
+`allowTools`/`maxRows` enforcement) only applies to requests whose authenticated user is in
+that list — everyone else's request is fully passed through, exactly as if the entity had no
+policy at all:
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "users": ["mcp-agent-technical-user"],
+    "entities": {
+      "Customers": { "mask": ["IBAN"] }
+    }
+  }
+}
+```
+
+Authenticate your MCP runtime as that technical user (via XSUAA/IAS, a service key bound to
+the CAP app) so its requests carry that identity; your UI's human users authenticate
+normally and are never in the list, so they always see real data through the same service and
+the same endpoint. This is only as secure as your CAP app's auth strategy — it requires a
+real, verified identity provider (XSUAA/IAS/JWT) in production. `mocked` auth (fine for local
+dev, as `examples/bookshop` uses) lets `req.user.id` be set by an untrusted client-supplied
+header, which defeats this entirely.
+
+`"services"` and `"users"` compose — set both if you want a dedicated AI-facing service *and*
+identity verification within it.
 
 ## What you get, per request
 
@@ -96,59 +154,21 @@ entities:
 
 All three run independently and can each be disabled per-call (`audit: false`, `otel: false`) if you're wiring `registerCapMcpGuard` yourself instead of relying on auto-discovery.
 
-## OData
-
-`registerCapMcpGuard` hooks CAP's own `before`/`after` service events, which only exists inside a Node CAP process. A lot of business data reaches an MCP agent over OData without ever passing through those hooks — a plain OData V2/V4 service, a CAP Java service, or an on-prem SAP Gateway/S/4HANA system fronted by a proxy route. `odataMcpGuard` runs the same Context → Decision → mask/audit/OTel pipeline against raw OData HTTP traffic instead, using one `cap-mcp-guard.yaml`:
-
-```js
-const express = require('express');
-const { odataMcpGuard } = require('cap-mcp-guard');
-
-const app = express();
-app.use('/odata', odataMcpGuard(), proxyToYourODataBackend);
-```
-
-- Mount it in front of any route that responds via `res.json(body)` — your own OData handler, or a reverse-proxy route rewriting a remote OData service's response.
-- Entity names are resolved from the URL path (`/odata/v4/browse/Books(201)` → `Books`), so `cap-mcp-guard.yaml` keys entities by the same name whichever adapter is in front of them. HTTP methods map onto the same operation vocabulary CAP requests use (`GET`→`READ`, `POST`→`CREATE`, `PUT`/`PATCH`→`UPDATE`, `DELETE`→`DELETE`), so `allowTools` rules are portable too.
-- **`$expand` is masked too.** `?$expand=author` on a `Books` read pulls the related `Author` row inline — without any extra config, its fields are masked under an `author` entity entry; nested `$expand=genre($expand=parent)` is masked at every level. One audit/OTel entry is produced per entity in the response (root + each expanded nav), not just one per HTTP request.
-- **Pass real `$metadata` for exact entity resolution.** By default, entity names are guessed from the URL/nav-property text itself (`Books(201)/author` → `author`, not the real target entity). Pass `metadataXml` (an already-fetched `$metadata` EDMX/CSDL document — this module never fetches it itself) or a pre-parsed `edm` (see `lib/core/edm.js`), and both deep paths and `$expand` resolve through the real navigation properties instead (`Books(201)/author` → `Authors`):
-
-  ```js
-  const metadataXml = fs.readFileSync('./service.edmx', 'utf8'); // or fetch it once at startup
-  app.use('/odata', odataMcpGuard({ metadataXml }), proxyToYourODataBackend);
-  ```
-
-- **`$batch` is decoded too, both wire formats** — each sub-request inside a batch is masked/audited/traced individually, exactly like a standalone request:
-  - **OData V4 JSON batch** (`{ requests: [...] }` request / `{ responses: [...] }` response) needs `req.body` to already be the parsed request JSON — mount a JSON body-parser (`express.json()`) before this middleware.
-  - **Classic OData V2 `multipart/mixed` batch** (including changesets — grouped write operations) needs `req.body` to already be the *raw* request body, and goes out via `res.send(rawBody)` rather than `res.json()`:
-
-    ```js
-    const express = require('express');
-    app.use(
-      '/sap/opu/odata',
-      express.raw({ type: 'multipart/mixed' }), // populates req.body for $batch requests
-      odataMcpGuard(),
-      proxyToYourODataBackend
-    );
-    ```
-
-  If a batch can't be decoded either way (missing/wrong `req.body`, no boundary, malformed MIME), it still produces one Context/Decision/audit entry (with an undefined entity) so it isn't silently unaccounted for — it's just unmasked.
-
 ## Try it
 
-A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, with `cap-mcp-guard` wired in and a `cap-mcp-guard.yaml` masking real fields on `CatalogService.Books`.
+A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, with `cap-mcp-guard` wired in and a `"cap-mcp-guard"` package.json config masking real fields on `CatalogService.Books`.
 
 ```bash
 cd examples/bookshop
 npm install
 npm test    # runs enforce/observe/audit/OTel integration tests against a real CAP service
-npm start   # boots a real server at localhost:4004 — flip cap-mcp-guard.yaml to `mode: enforce`
+npm start   # boots a real server at localhost:4004 — flip package.json's "cap-mcp-guard".mode to "enforce"
             # and hit /odata/v4/browse/Books to see masking happen live
 ```
 
 ## Coming soon (not in v1)
 
-- `@mcp.policy`-style CDS annotations as an alternative to `cap-mcp-guard.yaml`
+- `@mcp.policy`-style CDS annotations as an alternative to the `"cap-mcp-guard"` package.json config
 - Approval workflows (human-in-the-loop for sensitive operations)
 - Rate limiting and a dashboard UI
 - Actually blocking a request when `allowTools`/`maxRows` is violated (today those are computed and reported, not enforced)

@@ -8,10 +8,10 @@ const { registerCapMcpGuard } = require('cap-mcp-guard/lib/adapters/cap');
 describe('cap-mcp-guard M4 — enforce mode masks fields on the real response', () => {
   const decisions = [];
 
-  // The on-disk cap-mcp-guard.yaml ships in "observe" mode (see that file's
-  // comment); this suite overrides with an explicit inline policyDefinition
-  // so enforce/observe can each get their own isolated test file without
-  // maintaining two separate YAML fixtures on disk.
+  // The "cap-mcp-guard" key in package.json ships in "observe" mode; this
+  // suite overrides with an explicit inline policyDefinition so
+  // enforce/observe can each get their own isolated test file without
+  // maintaining two separate config fixtures on disk.
   registerCapMcpGuard(cds, {
     policyDefinition: {
       mode: 'enforce',

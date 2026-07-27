@@ -20,6 +20,9 @@
     "test": "jest"
   },
   "keywords": [
+    "CAP",
+    "CDS",
+    "cds-plugin",
     "cap",
     "sap",
     "odata",
@@ -48,7 +51,6 @@
     ]
   },
   "dependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "js-yaml": "^5.2.1"
+    "@opentelemetry/api": "^1.9.1"
   }
 }

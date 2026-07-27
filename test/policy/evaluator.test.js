@@ -16,6 +16,19 @@ function policy(mode, entities = {}) {
   return { mode, entities };
 }
 
+function passThroughShape(mode, context) {
+  return {
+    mode,
+    allowed: true,
+    reason: null,
+    fieldsToMask: [],
+    rowLimitExceeded: false,
+    maxRows: null,
+    entity: context.entity,
+    timestamp: context.timestamp
+  };
+}
+
 describe('evaluate', () => {
   test('entity not mentioned in policyDefinition.entities is fully allowed', () => {
     const decision = evaluate(ctx({ entity: 'Books' }), policy('enforce', {}));
@@ -127,5 +140,37 @@ describe('evaluate', () => {
     const decision = evaluate(ctx({ entity: 'Genres', timestamp: '2020-01-01T00:00:00.000Z' }), policy('enforce', {}));
     expect(decision.entity).toBe('Genres');
     expect(decision.timestamp).toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  describe('users allowlist', () => {
+    const entities = { Orders: { mask: ['CreditCard'], allowTools: ['ReadOrders'], maxRows: 1 } };
+
+    test('a user not in "users" is fully passed through — no masking, no allowTools/maxRows enforcement', () => {
+      const context = ctx({ user: 'alice@example.com', operation: 'DeleteOrder', rowCount: 999 });
+      const decision = evaluate(context, { mode: 'enforce', entities, users: ['mcp-agent-technical-user'] });
+
+      expect(decision).toEqual(passThroughShape('enforce', context));
+    });
+
+    test('a user in "users" gets the entity policy applied normally', () => {
+      const context = ctx({ user: 'mcp-agent-technical-user' });
+      const decision = evaluate(context, { mode: 'enforce', entities, users: ['mcp-agent-technical-user'] });
+
+      expect(decision.fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    test('omitting "users" enforces the policy for every requester, as before', () => {
+      const context = ctx({ user: 'alice@example.com' });
+      const decision = evaluate(context, { mode: 'enforce', entities });
+
+      expect(decision.fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    test('a request with no context.user is passed through when "users" is set', () => {
+      const context = ctx({ user: undefined });
+      const decision = evaluate(context, { mode: 'enforce', entities, users: ['mcp-agent-technical-user'] });
+
+      expect(decision).toEqual(passThroughShape('enforce', context));
+    });
   });
 });

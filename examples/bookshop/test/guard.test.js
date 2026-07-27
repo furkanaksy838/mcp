@@ -8,8 +8,8 @@ const { registerCapMcpGuard } = require('cap-mcp-guard/lib/adapters/cap');
 describe('cap-mcp-guard M1 — request interception against the real bookshop service', () => {
   const contexts = [];
   // Explicit no-op policyDefinition: this suite only cares about context
-  // building, so it stays independent of whatever cap-mcp-guard.yaml
-  // happens to contain (that's covered by the M4 masking test files).
+  // building, so it stays independent of whatever the "cap-mcp-guard"
+  // package.json config happens to contain (that's covered by the M4 masking test files).
   registerCapMcpGuard(cds, {
     onContext: (context) => contexts.push(context),
     policyDefinition: { mode: 'observe', entities: {} }
