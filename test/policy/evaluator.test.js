@@ -22,6 +22,7 @@ function passThroughShape(mode, context) {
     allowed: true,
     reason: null,
     fieldsToMask: [],
+    fieldsToPseudonymize: [],
     rowLimitExceeded: false,
     maxRows: null,
     entity: context.entity,
@@ -38,6 +39,7 @@ describe('evaluate', () => {
       allowed: true,
       reason: null,
       fieldsToMask: [],
+      fieldsToPseudonymize: [],
       rowLimitExceeded: false,
       maxRows: null,
       entity: 'Books',
@@ -171,6 +173,33 @@ describe('evaluate', () => {
       const decision = evaluate(context, { mode: 'enforce', entities, users: ['mcp-agent-technical-user'] });
 
       expect(decision).toEqual(passThroughShape('enforce', context));
+    });
+  });
+
+  describe('fieldsToPseudonymize', () => {
+    test('pseudonymize defined -> fieldsToPseudonymize is that array', () => {
+      const decision = evaluate(
+        ctx(),
+        policy('enforce', { Orders: { pseudonymize: [{ field: 'IBAN', type: 'iban' }] } })
+      );
+      expect(decision.fieldsToPseudonymize).toEqual([{ field: 'IBAN', type: 'iban' }]);
+    });
+
+    test('pseudonymize not defined -> fieldsToPseudonymize is [] (not undefined)', () => {
+      const decision = evaluate(ctx(), policy('enforce', { Orders: { mask: ['Salary'] } }));
+      expect(decision.fieldsToPseudonymize).toEqual([]);
+      expect(decision.fieldsToPseudonymize).not.toBeUndefined();
+    });
+
+    test('mask and pseudonymize can be used together on the same entity', () => {
+      const decision = evaluate(
+        ctx(),
+        policy('enforce', {
+          Orders: { mask: ['CreditCard'], pseudonymize: [{ field: 'IBAN', type: 'iban' }] }
+        })
+      );
+      expect(decision.fieldsToMask).toEqual(['CreditCard']);
+      expect(decision.fieldsToPseudonymize).toEqual([{ field: 'IBAN', type: 'iban' }]);
     });
   });
 });

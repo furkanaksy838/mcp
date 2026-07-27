@@ -220,6 +220,56 @@ describe('registerCapMcpGuard', () => {
     });
   });
 
+  describe('policyDefinition.entities.<name>.pseudonymize', () => {
+    test('replaces the real IBAN with a deterministic fake one, never the real value', async () => {
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'iban' }] } }
+        },
+        pseudonymSecret: 'test-secret'
+      });
+      cds.fireServed();
+
+      const firstRead = [{ ID: 1, IBAN: 'DE89370400440532013000' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, firstRead);
+
+      const secondRead = [{ ID: 1, IBAN: 'DE89370400440532013000' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, secondRead);
+
+      expect(firstRead[0].IBAN).not.toBe('DE89370400440532013000');
+      expect(firstRead[0].IBAN).toBe(secondRead[0].IBAN); // deterministic across separate requests
+
+      const otherCustomerRead = [{ ID: 2, IBAN: 'FR1420041010050500013M02606' }];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, otherCustomerRead);
+      expect(otherCustomerRead[0].IBAN).not.toBe(firstRead[0].IBAN); // different real value -> different pseudonym
+    });
+
+    test('throws synchronously at registration when pseudonymize is configured but no secret is available', () => {
+      const savedEnv = process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+      delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+
+      try {
+        const cds = createFakeCds(tmpDir, {});
+
+        expect(() =>
+          registerCapMcpGuard(cds, {
+            policyDefinition: {
+              mode: 'enforce',
+              entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'iban' }] } }
+            }
+          })
+        ).toThrow('CAP_MCP_GUARD_PSEUDONYM_SECRET env var (or options.pseudonymSecret) is required');
+      } finally {
+        if (savedEnv === undefined) delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+        else process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET = savedEnv;
+      }
+    });
+  });
+
   describe('audit logging (M5)', () => {
     test('logs an audit entry to stdout by default for every request', async () => {
       const Orders = createFakeService();

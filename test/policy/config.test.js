@@ -120,6 +120,62 @@ describe('parseConfig', () => {
     const raw = { mode: 'enforce', users: 'mcp-agent-technical-user' };
     expect(() => parseConfig(raw)).toThrow('"users" must be an array, got string');
   });
+
+  describe('entities.<name>.pseudonymize', () => {
+    test('normalizes a bare string entry to { field, type: "opaque" }', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: ['Email'] } } };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([{ field: 'Email', type: 'opaque' }]);
+    });
+
+    test('accepts a { field, type } object entry as-is', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'iban' }] } } };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([{ field: 'IBAN', type: 'iban' }]);
+    });
+
+    test('a { field } object without a type defaults to "opaque"', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'Email' }] } } };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([{ field: 'Email', type: 'opaque' }]);
+    });
+
+    test('is undefined (not []) when omitted', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { mask: ['CreditCard'] } } };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toBeUndefined();
+    });
+
+    test('throws when pseudonymize is not an array', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: 'IBAN' } } };
+      expect(() => parseConfig(raw)).toThrow('entities.Customers.pseudonymize must be an array, got string');
+    });
+
+    test('throws when an entry has an unknown type', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'creditCard' }] } } };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.IBAN.type must be one of opaque, iban (got "creditCard")'
+      );
+    });
+
+    test('throws when an object entry has no "field"', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ type: 'iban' }] } } };
+      expect(() => parseConfig(raw)).toThrow('entities.Customers.pseudonymize entries must have a "field" string');
+    });
+
+    test('throws when an entry is neither a string nor an object', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [42] } } };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize entries must be a string or a {field, type} object, got number'
+      );
+    });
+
+    test('throws when the same field is listed in both "mask" and "pseudonymize"', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Customers: { mask: ['IBAN'], pseudonymize: ['IBAN'] } }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers: "IBAN" cannot be listed in both "mask" and "pseudonymize"'
+      );
+    });
+  });
 });
 
 describe('loadConfig', () => {

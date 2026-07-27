@@ -146,9 +146,54 @@ header, which defeats this entirely.
 `"services"` and `"users"` compose — set both if you want a dedicated AI-facing service *and*
 identity verification within it.
 
+### Pseudonymizing instead of redacting
+
+Plain `mask` replaces every real value with the same fixed string, `'***MASKED***'` —
+which means an AI agent can no longer tell two different customers' masked fields apart at
+all (no grouping, no counting distinct values, no relational reasoning). `pseudonymize`
+replaces a real value with a **fake but deterministic** one instead: the same real value
+always produces the same fake value, and different real values produce different fake
+values — so the agent keeps that relational structure without ever seeing the real data.
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "entities": {
+      "Customers": {
+        "mask": ["CreditCard"],
+        "pseudonymize": [
+          "Email",
+          { "field": "IBAN", "type": "iban" }
+        ]
+      }
+    }
+  }
+}
+```
+
+Each entry is either a bare field name (uses the generic `"opaque"` generator — a
+deterministic token like `Email-7f3a9c21e1b4`, carrying no information about the real
+value) or a `{ "field", "type" }` object naming a specific generator. The only built-in
+typed generator today is `"iban"`: it keeps the real country code and total length, and
+computes a real ISO 7064 MOD 97-10 check digit pair, so the fake IBAN passes standard IBAN
+checksum validation — it isn't a real account, but nothing downstream sees it as malformed.
+A field can't be listed in both `mask` and `pseudonymize` on the same entity (config fails
+to load if it is). More typed generators (e.g. a Luhn-valid fake credit card number) can be
+added later without changing this config shape — anything without a dedicated generator
+just falls back to `"opaque"`.
+
+**Requires a secret.** Set the `CAP_MCP_GUARD_PSEUDONYM_SECRET` environment variable (or
+pass `pseudonymSecret` directly to `registerCapMcpGuard`) — every pseudonym is derived from
+it via HMAC, so without it a fake value can't be reproduced or tied back to a real one.
+**Never commit this value.** If any entity configures `pseudonymize` and no secret is set,
+the server fails to start rather than silently producing unprotected data. Rotating the
+secret invalidates every previously-issued pseudonym (the same real value will map to a new
+fake one from then on) — this is expected, not a bug.
+
 ## What you get, per request
 
-- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'` in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen.
+- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'`, and fields under `pseudonymize` with a deterministic fake value (see above), in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen.
 - **Audit log** — every request produces a structured JSON line (Context + Decision), to stdout and/or a file you choose.
 - **OpenTelemetry spans** — every request also becomes a real span via `@opentelemetry/api`. If your app already has an OTel SDK configured (any OTLP-compatible backend — Grafana, Jaeger, Datadog, SAP Cloud Logging), the guard's spans just show up there, correctly linked into the caller's trace via W3C Trace Context (`traceparent`/`tracestate`) when present — no extra mapping needed, because the context schema was built against OTel's GenAI semantic conventions (`gen_ai.*`) from the start.
 
