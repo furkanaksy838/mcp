@@ -107,6 +107,30 @@ describe('registerCapMcpGuard', () => {
     expect(() => registerCapMcpGuard(cds)).toThrow(/^Failed to parse /);
   });
 
+  test('refuses to start (instead of silently pass-through) when a legacy cap-mcp-guard.yaml is found and package.json has no config', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'cap-mcp-guard.yaml'),
+      'mode: enforce\nentities:\n  Orders:\n    mask:\n      - CreditCard\n'
+    );
+    // no package.json at all in tmpDir — matches "not configured" from loadConfig's perspective
+
+    const cds = createFakeCds(tmpDir, {});
+
+    expect(() => registerCapMcpGuard(cds)).toThrow(/cap-mcp-guard\.yaml.*no longer|not.*read.*since 0\.3\.0/i);
+  });
+
+  test('still falls back to pass-through, with the usual warning, when no legacy yaml file exists either', () => {
+    const cds = createFakeCds(tmpDir, {});
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      expect(() => registerCapMcpGuard(cds)).not.toThrow();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('no config found'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('an explicit options.policyDefinition takes precedence over the config on disk', async () => {
     writeConfig(tmpDir, { mode: 'enforce', entities: { Orders: { mask: ['CreditCard'] } } });
 
@@ -302,6 +326,43 @@ describe('registerCapMcpGuard', () => {
       const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n');
       expect(lines).toHaveLength(1);
       expect(JSON.parse(lines[0]).context.entity).toBe('Orders');
+    });
+
+    test('picks up audit.filePath from the "cap-mcp-guard" key in package.json, with no options.audit at all', async () => {
+      const auditFile = path.join(tmpDir, 'audit.log');
+      writeConfig(tmpDir, {
+        mode: 'observe',
+        entities: {},
+        audit: { filePath: auditFile }
+      });
+
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds); // no options at all — matches cds-plugin.js's auto-discovery call
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).context.entity).toBe('Orders');
+    });
+
+    test('an explicit options.audit still overrides whatever package.json configures', async () => {
+      writeConfig(tmpDir, { mode: 'observe', entities: {}, audit: { filePath: path.join(tmpDir, 'from-config.log') } });
+
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      const overrideFile = path.join(tmpDir, 'from-options.log');
+
+      registerCapMcpGuard(cds, { audit: { filePath: overrideFile } });
+      cds.fireServed();
+
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }]);
+
+      expect(fs.existsSync(overrideFile)).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'from-config.log'))).toBe(false);
     });
 
     test('options.audit: false disables audit logging entirely', async () => {

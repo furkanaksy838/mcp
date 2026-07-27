@@ -121,6 +121,37 @@ describe('parseConfig', () => {
     expect(() => parseConfig(raw)).toThrow('"users" must be an array, got string');
   });
 
+  describe('"audit"', () => {
+    test('accepts an "audit.filePath" and returns it', () => {
+      const raw = { mode: 'enforce', audit: { filePath: 'audit.log' } };
+      expect(parseConfig(raw).audit).toEqual({ filePath: 'audit.log' });
+    });
+
+    test('accepts an "audit.stdout" flag alongside filePath', () => {
+      const raw = { mode: 'enforce', audit: { filePath: 'audit.log', stdout: false } };
+      expect(parseConfig(raw).audit).toEqual({ filePath: 'audit.log', stdout: false });
+    });
+
+    test('"audit" is undefined when omitted', () => {
+      expect(parseConfig({ mode: 'enforce' }).audit).toBeUndefined();
+    });
+
+    test('throws when "audit" is not a mapping', () => {
+      const raw = { mode: 'enforce', audit: 'audit.log' };
+      expect(() => parseConfig(raw)).toThrow('"audit" must be a mapping, got string');
+    });
+
+    test('throws when "audit.filePath" is not a string', () => {
+      const raw = { mode: 'enforce', audit: { filePath: 123 } };
+      expect(() => parseConfig(raw)).toThrow('"audit.filePath" must be a string, got number');
+    });
+
+    test('throws when "audit.stdout" is not a boolean', () => {
+      const raw = { mode: 'enforce', audit: { stdout: 'yes' } };
+      expect(() => parseConfig(raw)).toThrow('"audit.stdout" must be a boolean, got string');
+    });
+  });
+
   describe('entities.<name>.pseudonymize', () => {
     test('normalizes a bare string entry to { field, type: "opaque" }', () => {
       const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: ['Email'] } } };

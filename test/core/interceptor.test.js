@@ -204,4 +204,151 @@ describe('attachInterceptor', () => {
       ).resolves.toBeUndefined();
     });
   });
+
+  describe('enforcement beyond masking (allowTools, maxRows, nested associations)', () => {
+    test('enforce mode calls req.reject() when the operation is not in allowTools, before the query runs', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        entities: { Orders: { allowTools: ['NEVER_MATCHES'] } }
+      };
+      const onDecision = jest.fn();
+      attachInterceptor(srv, { policyDefinition, onDecision });
+
+      // real cds.Request#reject() throws, which is what actually stops the request
+      // before the query runs and srv.after('*') never fires for it
+      const reject = jest.fn((code, message) => {
+        throw Object.assign(new Error(message), { code });
+      });
+      const req = { event: 'READ', entity: 'Orders', reject };
+      const results = [{ ID: 1 }];
+
+      await expect(srv.simulateRequest(req, results)).rejects.toThrow(/allowTools/);
+
+      expect(reject).toHaveBeenCalledWith(403, expect.stringContaining('allowTools'));
+      // results untouched: the after handler never ran because reject() short-circuits
+      expect(results).toEqual([{ ID: 1 }]);
+      // still audited, even though the request was denied and after() never fired
+      expect(onDecision).toHaveBeenCalledTimes(1);
+      expect(onDecision.mock.calls[0][0].allowed).toBe(false);
+    });
+
+    test('throws when denied and req.reject is not a function (non-CAP callers)', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        entities: { Orders: { allowTools: ['NEVER_MATCHES'] } }
+      };
+      attachInterceptor(srv, { policyDefinition });
+
+      await expect(
+        srv.simulateRequest({ event: 'READ', entity: 'Orders' }, [{ ID: 1 }])
+      ).rejects.toThrow(/allowTools/);
+    });
+
+    test('observe mode never rejects even when allowTools would deny', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'observe',
+        entities: { Orders: { allowTools: ['NEVER_MATCHES'] } }
+      };
+      const req = { event: 'READ', entity: 'Orders', reject: jest.fn() };
+
+      attachInterceptor(srv, { policyDefinition });
+      await expect(srv.simulateRequest(req, [{ ID: 1 }])).resolves.toBeUndefined();
+      expect(req.reject).not.toHaveBeenCalled();
+    });
+
+    test('enforce mode truncates results in place when maxRows is exceeded', async () => {
+      const srv = createFakeService();
+      const policyDefinition = { mode: 'enforce', entities: { Orders: { maxRows: 1 } } };
+      attachInterceptor(srv, { policyDefinition });
+
+      const results = [{ ID: 1 }, { ID: 2 }, { ID: 3 }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Orders' }, results);
+
+      expect(results).toEqual([{ ID: 1 }]);
+    });
+
+    test('does not truncate when maxRows is not exceeded', async () => {
+      const srv = createFakeService();
+      const policyDefinition = { mode: 'enforce', entities: { Orders: { maxRows: 5 } } };
+      attachInterceptor(srv, { policyDefinition });
+
+      const results = [{ ID: 1 }, { ID: 2 }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Orders' }, results);
+
+      expect(results).toEqual([{ ID: 1 }, { ID: 2 }]);
+    });
+
+    test('applies the target entity policy to an expanded association, one level deep', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        entities: {
+          Employees: { mask: ['salary'] },
+          Departments: { mask: ['budget'] }
+        }
+      };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: {
+          elements: {
+            department: { type: 'cds.Association', target: 'Departments' },
+            name: { type: 'cds.String' }
+          }
+        }
+      };
+      const results = [
+        { ID: 1, salary: 85000, department: { ID: 1, budget: 2500000 } },
+        { ID: 2, salary: 95000, department: { ID: 2, budget: 800000 } }
+      ];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results).toEqual([
+        { ID: 1, salary: '***MASKED***', department: { ID: 1, budget: '***MASKED***' } },
+        { ID: 2, salary: '***MASKED***', department: { ID: 2, budget: '***MASKED***' } }
+      ]);
+    });
+
+    test('leaves the nav property untouched when the target entity has no policy configured', async () => {
+      const srv = createFakeService();
+      const policyDefinition = { mode: 'enforce', entities: { Employees: { mask: ['salary'] } } };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, salary: 85000, department: { ID: 1, budget: 2500000 } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].department).toEqual({ ID: 1, budget: 2500000 });
+    });
+
+    test('does nothing when the association was not expanded (nav property absent)', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        entities: { Employees: { mask: ['salary'] }, Departments: { mask: ['budget'] } }
+      };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, salary: 85000, department_ID: 1 }];
+
+      await expect(srv.simulateRequest(req, results)).resolves.toBeUndefined();
+      expect(results).toEqual([{ ID: 1, salary: '***MASKED***', department_ID: 1 }]);
+    });
+  });
 });
