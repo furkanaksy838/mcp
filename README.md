@@ -39,7 +39,8 @@ Claude / Joule / Copilot / Custom Agent
     │  lib/policy/            │ → knows nothing about CAP. Plain JS: Context in,
     │   ├─ config.js          │   Decision out.
     │   ├─ evaluator.js       │
-    │   └─ masking.js         │
+    │   ├─ masking.js         │
+    │   └─ pseudonym.js       │
     │                         │
     │  lib/audit/             │
     │   └─ log.js             │ → Context + Decision → structured JSON log line
