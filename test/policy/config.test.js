@@ -181,7 +181,44 @@ describe('parseConfig', () => {
     test('throws when an entry has an unknown type', () => {
       const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'creditCard' }] } } };
       expect(() => parseConfig(raw)).toThrow(
-        'entities.Customers.pseudonymize.IBAN.type must be one of opaque, iban (got "creditCard")'
+        'entities.Customers.pseudonymize.IBAN.type must be one of opaque, iban, custom (got "creditCard")'
+      );
+    });
+
+    test('accepts a { field, type: "custom", value } entry as-is', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Customers: { pseudonymize: [{ field: 'Email', type: 'custom', value: 'hidden@example.com' }] } }
+      };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([
+        { field: 'Email', type: 'custom', value: 'hidden@example.com' }
+      ]);
+    });
+
+    test('throws when type is "custom" and "value" is missing', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'Email', type: 'custom' }] } } };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.Email: type "custom" requires a non-empty "value" string'
+      );
+    });
+
+    test('throws when type is "custom" and "value" is an empty string', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Customers: { pseudonymize: [{ field: 'Email', type: 'custom', value: '' }] } }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.Email: type "custom" requires a non-empty "value" string'
+      );
+    });
+
+    test('throws when "value" is given for a non-"custom" type', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'iban', value: 'whatever' }] } }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.IBAN: "value" is only allowed with type "custom"'
       );
     });
 

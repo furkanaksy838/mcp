@@ -272,6 +272,83 @@ describe('registerCapMcpGuard', () => {
       expect(otherCustomerRead[0].IBAN).not.toBe(firstRead[0].IBAN); // different real value -> different pseudonym
     });
 
+    test('type "custom" replaces the real value with the configured literal, for every row', async () => {
+      const Customers = createFakeService();
+      const cds = createFakeCds(tmpDir, { Customers });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: {
+            Customers: { pseudonymize: [{ field: 'Email', type: 'custom', value: 'hidden@example.com' }] }
+          }
+        }
+      });
+      cds.fireServed();
+
+      const results = [
+        { ID: 1, Email: 'alice@example.com' },
+        { ID: 2, Email: 'bob@example.com' }
+      ];
+      await Customers.simulateRead({ event: 'READ', entity: 'Customers' }, results);
+
+      expect(results).toEqual([
+        { ID: 1, Email: 'hidden@example.com' },
+        { ID: 2, Email: 'hidden@example.com' }
+      ]);
+    });
+
+    test('does not require a pseudonym secret when every entry is type "custom"', () => {
+      const savedEnv = process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+      delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+
+      try {
+        const cds = createFakeCds(tmpDir, {});
+
+        expect(() =>
+          registerCapMcpGuard(cds, {
+            policyDefinition: {
+              mode: 'enforce',
+              entities: {
+                Customers: { pseudonymize: [{ field: 'Email', type: 'custom', value: 'hidden@example.com' }] }
+              }
+            }
+          })
+        ).not.toThrow();
+      } finally {
+        if (savedEnv === undefined) delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+        else process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET = savedEnv;
+      }
+    });
+
+    test('still requires a secret when a "custom" entry is mixed with a non-"custom" one', () => {
+      const savedEnv = process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+      delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+
+      try {
+        const cds = createFakeCds(tmpDir, {});
+
+        expect(() =>
+          registerCapMcpGuard(cds, {
+            policyDefinition: {
+              mode: 'enforce',
+              entities: {
+                Customers: {
+                  pseudonymize: [
+                    { field: 'Email', type: 'custom', value: 'hidden@example.com' },
+                    { field: 'IBAN', type: 'iban' }
+                  ]
+                }
+              }
+            }
+          })
+        ).toThrow('CAP_MCP_GUARD_PSEUDONYM_SECRET env var (or options.pseudonymSecret) is required');
+      } finally {
+        if (savedEnv === undefined) delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+        else process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET = savedEnv;
+      }
+    });
+
     test('throws synchronously at registration when pseudonymize is configured but no secret is available', () => {
       const savedEnv = process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
       delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;

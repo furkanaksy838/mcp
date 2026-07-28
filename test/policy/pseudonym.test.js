@@ -85,6 +85,24 @@ describe('generatePseudonym — iban', () => {
   });
 });
 
+describe('generatePseudonym — custom', () => {
+  test('returns the configured literal value verbatim, ignoring the real value', () => {
+    const result = generatePseudonym('Email', 'alice@example.com', 'custom', 'secret-1', 'hidden@example.com');
+    expect(result).toBe('hidden@example.com');
+  });
+
+  test('returns the same literal for every real value (not deterministic-per-value, just fixed)', () => {
+    const a = generatePseudonym('Email', 'alice@example.com', 'custom', 'secret-1', 'hidden@example.com');
+    const b = generatePseudonym('Email', 'bob@example.com', 'custom', 'secret-1', 'hidden@example.com');
+    expect(a).toBe(b);
+  });
+
+  test('works without a secret, since nothing is derived from it', () => {
+    const result = generatePseudonym('Email', 'alice@example.com', 'custom', undefined, 'hidden@example.com');
+    expect(result).toBe('hidden@example.com');
+  });
+});
+
 describe('generatePseudonym — unknown type', () => {
   test('throws for a type outside PSEUDONYM_TYPES', () => {
     expect(() => generatePseudonym('IBAN', 'x', 'not-a-real-type', 'secret-1')).toThrow(

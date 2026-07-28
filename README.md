@@ -184,6 +184,32 @@ to load if it is). More typed generators (e.g. a Luhn-valid fake credit card num
 added later without changing this config shape — anything without a dedicated generator
 just falls back to `"opaque"`.
 
+Sometimes you don't want a *derived* fake value at all — just one fixed, human-chosen
+replacement, the same for every row (e.g. a shared support alias instead of each customer's
+real email). Use `type: "custom"` with a required `"value"`:
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "entities": {
+      "Customers": {
+        "pseudonymize": [{ "field": "Email", "type": "custom", "value": "hidden@example.com" }]
+      }
+    }
+  }
+}
+```
+
+Unlike `"opaque"`/`"iban"`, `"custom"` doesn't derive anything from the real value or the
+pseudonym secret — every row gets the exact same literal, so it doesn't need
+`CAP_MCP_GUARD_PSEUDONYM_SECRET` at all (a config that mixes a `"custom"` entry with a
+non-`"custom"` one on the same or another entity still needs the secret, for the other
+entry). Because every real value maps to the same output, `"custom"` gives up the
+relational structure (telling two customers apart) that `"opaque"`/`"iban"` preserve — it's
+closer in effect to `mask`, just with your own replacement string instead of the fixed
+`'***MASKED***'`.
+
 **Requires a secret.** Set the `CAP_MCP_GUARD_PSEUDONYM_SECRET` environment variable (or
 pass `pseudonymSecret` directly to `registerCapMcpGuard`) — every pseudonym is derived from
 it via HMAC, so without it a fake value can't be reproduced or tied back to a real one.
@@ -194,7 +220,8 @@ fake one from then on) — this is expected, not a bug.
 
 ## What you get, per request
 
-- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'`, and fields under `pseudonymize` with a deterministic fake value (see above), in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen.
+- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'`, and fields under `pseudonymize` with a deterministic fake value (see above), in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Also applied one level deep to any `$expand`ed association whose target entity has its own policy.
+- **Tool/row enforcement** — in `enforce` mode, a request naming an operation outside `allowTools` is rejected with a 403 before it runs; a response exceeding `maxRows` is truncated to that limit. In `observe` mode both are only computed and reported, never applied.
 - **Audit log** — every request produces a structured JSON line (Context + Decision), to stdout and/or a file you choose.
 - **OpenTelemetry spans** — every request also becomes a real span via `@opentelemetry/api`. If your app already has an OTel SDK configured (any OTLP-compatible backend — Grafana, Jaeger, Datadog, SAP Cloud Logging), the guard's spans just show up there, correctly linked into the caller's trace via W3C Trace Context (`traceparent`/`tracestate`) when present — no extra mapping needed, because the context schema was built against OTel's GenAI semantic conventions (`gen_ai.*`) from the start.
 
@@ -217,7 +244,6 @@ npm start   # boots a real server at localhost:4004 — flip package.json's "cap
 - `@mcp.policy`-style CDS annotations as an alternative to the `"cap-mcp-guard"` package.json config
 - Approval workflows (human-in-the-loop for sensitive operations)
 - Rate limiting and a dashboard UI
-- Actually blocking a request when `allowTools`/`maxRows` is violated (today those are computed and reported, not enforced)
 
 ## Development
 
