@@ -218,6 +218,39 @@ the server fails to start rather than silently producing unprotected data. Rotat
 secret invalidates every previously-issued pseudonym (the same real value will map to a new
 fake one from then on) — this is expected, not a bug.
 
+### Configuring policy via CDS annotations, instead of (or alongside) package.json
+
+The `package.json` config above works out of the box, but the rule lives in a separate file
+from the schema it protects — if someone adds a new sensitive field to an entity, nothing
+forces them to remember the matching config entry. As an alternative (or complement), you
+can annotate fields directly in your `.cds` model with `@mcp.policy`:
+
+```cds
+entity Employees {
+  key ID     : Integer;
+      name   : String;
+      salary : Decimal(10, 2) @mcp.policy.mask;
+      iban   : String         @mcp.policy.pseudonymize: 'iban';
+}
+
+@mcp.policy.maxRows: 100
+entity Orders as projection on my.Orders;
+```
+
+- `@mcp.policy.mask` on a field — same effect as listing it under `"mask"` in package.json.
+- `@mcp.policy.pseudonymize: 'iban'` — a bare string names the pseudonymize type (`opaque`/`iban`); use an object for `custom`: `@mcp.policy.pseudonymize: {type: 'custom', value: 'hidden@example.com'}`.
+- `@mcp.policy.maxRows` / `@mcp.policy.allowTools` — entity-level, same meaning as their package.json counterparts.
+
+Annotations are read once the model is compiled and services are served, then merged with
+whatever `package.json` configures for the same entity: `mask` fields union, `pseudonymize`
+entries union by field (package.json wins if the same field is set on both sides), and
+`maxRows`/`allowTools` prefer the package.json value when both are present. A field listed
+under `mask` from one source and `pseudonymize` from the other still fails loudly, exactly
+like configuring both in the same package.json entity. **`mode`, `services`, `users`, and
+`audit` always come from package.json (or `registerCapMcpGuard()`'s options) — annotations
+only ever add or refine per-entity `mask`/`pseudonymize`/`maxRows`/`allowTools`, they can't
+turn enforcement on by themselves.**
+
 ## What you get, per request
 
 - **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'`, and fields under `pseudonymize` with a deterministic fake value (see above), in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Also applied one level deep to any `$expand`ed association whose target entity has its own policy.
@@ -241,7 +274,6 @@ npm start   # boots a real server at localhost:4004 — flip package.json's "cap
 
 ## Coming soon (not in v1)
 
-- `@mcp.policy`-style CDS annotations as an alternative to the `"cap-mcp-guard"` package.json config
 - Approval workflows (human-in-the-loop for sensitive operations)
 - Rate limiting and a dashboard UI
 

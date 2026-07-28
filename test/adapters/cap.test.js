@@ -10,9 +10,10 @@ const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = requi
 const { registerCapMcpGuard } = require('../../lib/adapters/cap');
 
 /** Minimal duck-typed CAP service — no @sap/cds involved. */
-function createFakeService() {
+function createFakeService(entities) {
   const afterHandlers = [];
   return {
+    ...(entities && { entities }),
     before() {},
     after(event, handler) {
       afterHandlers.push(handler);
@@ -368,6 +369,107 @@ describe('registerCapMcpGuard', () => {
         if (savedEnv === undefined) delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
         else process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET = savedEnv;
       }
+    });
+  });
+
+  describe('@mcp.policy CDS annotations', () => {
+    test('masks a field flagged @mcp.policy.mask even though package.json never mentions the entity', async () => {
+      const Employees = createFakeService({
+        Employees: { name: 'CatalogService.Employees', elements: { salary: { '@mcp.policy.mask': true } } }
+      });
+      const cds = createFakeCds(tmpDir, { Employees });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'enforce', entities: {} } });
+      cds.fireServed();
+
+      const results = [{ ID: 1, salary: 85000 }];
+      await Employees.simulateRead({ event: 'READ', entity: 'CatalogService.Employees' }, results);
+
+      expect(results).toEqual([{ ID: 1, salary: '***MASKED***' }]);
+    });
+
+    test('merges an annotation-flagged field with an already-configured entity from package.json', async () => {
+      const Employees = createFakeService({
+        Employees: { name: 'CatalogService.Employees', elements: { nationalId: { '@mcp.policy.mask': true } } }
+      });
+      const cds = createFakeCds(tmpDir, { Employees });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: { mode: 'enforce', entities: { 'CatalogService.Employees': { mask: ['salary'] } } }
+      });
+      cds.fireServed();
+
+      const results = [{ ID: 1, salary: 85000, nationalId: '12345678901' }];
+      await Employees.simulateRead({ event: 'READ', entity: 'CatalogService.Employees' }, results);
+
+      expect(results).toEqual([{ ID: 1, salary: '***MASKED***', nationalId: '***MASKED***' }]);
+    });
+
+    test('an entity with no annotations and no package.json entry stays fully unmasked', async () => {
+      const Departments = createFakeService({
+        Departments: { name: 'CatalogService.Departments', elements: { budget: { type: 'cds.Decimal' } } }
+      });
+      const cds = createFakeCds(tmpDir, { Departments });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'enforce', entities: {} } });
+      cds.fireServed();
+
+      const results = [{ ID: 1, budget: 2500000 }];
+      await Departments.simulateRead({ event: 'READ', entity: 'CatalogService.Departments' }, results);
+
+      expect(results).toEqual([{ ID: 1, budget: 2500000 }]);
+    });
+
+    test('pseudonymizes a field annotated with @mcp.policy.pseudonymize', async () => {
+      const Employees = createFakeService({
+        Employees: { name: 'CatalogService.Employees', elements: { iban: { '@mcp.policy.pseudonymize': 'iban' } } }
+      });
+      const cds = createFakeCds(tmpDir, { Employees });
+
+      registerCapMcpGuard(cds, {
+        policyDefinition: { mode: 'enforce', entities: {} },
+        pseudonymSecret: 'test-secret'
+      });
+      cds.fireServed();
+
+      const results = [{ ID: 1, iban: 'DE89370400440532013000' }];
+      await Employees.simulateRead({ event: 'READ', entity: 'CatalogService.Employees' }, results);
+
+      expect(results[0].iban).not.toBe('DE89370400440532013000');
+    });
+
+    test('throws at cds.on("served") time when an annotation introduces a pseudonymize need with no secret available', () => {
+      const savedEnv = process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+      delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+
+      try {
+        const Employees = createFakeService({
+          Employees: { name: 'CatalogService.Employees', elements: { iban: { '@mcp.policy.pseudonymize': 'iban' } } }
+        });
+        const cds = createFakeCds(tmpDir, { Employees });
+
+        // package.json-only config has no pseudonymize at all, so this does NOT throw yet —
+        // the annotation is the only source of the pseudonymize need, and it isn't visible
+        // until the model is served.
+        expect(() => registerCapMcpGuard(cds, { policyDefinition: { mode: 'enforce', entities: {} } })).not.toThrow();
+
+        expect(() => cds.fireServed()).toThrow('CAP_MCP_GUARD_PSEUDONYM_SECRET env var (or options.pseudonymSecret) is required');
+      } finally {
+        if (savedEnv === undefined) delete process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET;
+        else process.env.CAP_MCP_GUARD_PSEUDONYM_SECRET = savedEnv;
+      }
+    });
+
+    test('a service with no .entities at all (duck-typed fakes) is simply not scanned for annotations', async () => {
+      const Orders = createFakeService(); // no entities property
+      const cds = createFakeCds(tmpDir, { Orders });
+
+      registerCapMcpGuard(cds, { policyDefinition: { mode: 'enforce', entities: {} } });
+      expect(() => cds.fireServed()).not.toThrow();
+
+      const results = [{ ID: 1, CreditCard: '4111-...' }];
+      await Orders.simulateRead({ event: 'READ', entity: 'Orders' }, results);
+      expect(results).toEqual([{ ID: 1, CreditCard: '4111-...' }]);
     });
   });
 
