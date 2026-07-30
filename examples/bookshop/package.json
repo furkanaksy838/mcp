@@ -31,16 +31,7 @@
     "testTimeout": 30000
   },
   "cap-mcp-guard": {
-    "mode": "observe",
-    "entities": {
-      "CatalogService.Books": {
-        "mask": ["descr", "price"],
-        "maxRows": 50,
-        "allowTools": ["ReadBooks"]
-      },
-      "AdminService.Authors": {
-        "mask": ["dateOfDeath"]
-      }
-    }
+    "mode": "enforce",
+    "services": ["AgentService"]
   }
 }

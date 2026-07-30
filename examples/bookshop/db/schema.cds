@@ -1,6 +1,13 @@
 using { Currency, cuid, managed, sap } from '@sap/cds/common';
 namespace sap.capire.bookshop;
 
+// The @mcp.policy annotations below are cap-mcp-guard's policy, declared on the fields
+// themselves rather than in package.json — so a new sensitive column can't be added without
+// its rule sitting right next to it. They propagate to every service projecting these
+// entities; which of those services the guard actually enforces on is scoped separately,
+// via "cap-mcp-guard".services in package.json (here: AgentService only, so the UI's
+// CatalogService keeps seeing real values).
+
 entity Books : managed {
   key ID   : Integer;
   author   : Association to Authors @mandatory;
@@ -8,7 +15,7 @@ entity Books : managed {
   descr    : localized String(2000);
   genre    : Association to Genres;
   stock    : Integer;
-  price    : Price;
+  price    : Price @mcp.policy.mask;
   currency : Currency;
 }
 
@@ -18,7 +25,7 @@ entity Authors : managed {
   dateOfBirth  : Date;
   dateOfDeath  : Date;
   placeOfBirth : String;
-  placeOfDeath : String;
+  placeOfDeath : String @mcp.policy.mask;
   books        : Association to many Books on books.author = $self;
 }
 

@@ -321,15 +321,23 @@ All three run independently and can each be disabled per-call (`audit: false`, `
 
 ## Try it
 
-A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, with `cap-mcp-guard` wired in and a `"cap-mcp-guard"` package.json config masking real fields on `CatalogService.Books`.
+A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, set up exactly the way this README recommends: sensitive fields carry `@mcp.policy.mask` in `db/schema.cds`, an agent-facing `AgentService` projects the same entities as the UI's `CatalogService`, and package.json contains nothing but `{"mode": "enforce", "services": ["AgentService"]}`.
 
 ```bash
 cd examples/bookshop
 npm install
-npm test    # runs enforce/observe/audit/OTel integration tests against a real CAP service
-npm start   # boots a real server at localhost:4004 — flip package.json's "cap-mcp-guard".mode to "enforce"
-            # and hit /odata/v4/browse/Books to see masking happen live
+npm test    # annotation/enforce/observe/audit/OTel integration tests against a real CAP service
+npm start   # boots a real server at localhost:4004
 ```
+
+With the server up, read the same row through both services and compare:
+
+```bash
+curl 'http://localhost:4004/odata/v4/agent/Books(201)?$select=title,price'   # price: "***MASKED***"
+curl 'http://localhost:4004/odata/v4/browse/Books(201)?$select=title,price'  # price: "11.11"
+```
+
+Same table, same row, one annotation — masked for the agent, untouched for the UI.
 
 ## Coming soon (not in v1)
 
