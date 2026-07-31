@@ -321,23 +321,29 @@ All three run independently and can each be disabled per-call (`audit: false`, `
 
 ## Try it
 
-A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, set up exactly the way this README recommends: sensitive fields carry `@mcp.policy.mask` in `db/schema.cds`, an agent-facing `AgentService` projects the same entities as the UI's `CatalogService`, and package.json contains nothing but `{"mode": "enforce", "services": ["AgentService"]}`.
+A full working example lives in [`examples/bookshop`](examples/bookshop) — SAP's own CAP getting-started sample, with both agent-facing shapes wired up and package.json containing nothing but `{"mode": "enforce"}`:
+
+- **A service of its own** — [`srv/agent-service.cds`](examples/bookshop/srv/agent-service.cds) adds `AgentService` at `/odata/v4/agent`, projecting the same entities `CatalogService` serves to the UI.
+- **An entity of its own, in the UI's service** — [`srv/agent-entity.cds`](examples/bookshop/srv/agent-entity.cds) adds `CatalogService.AgentBooks` at `/odata/v4/browse/AgentBooks`, no second service involved.
+
+Both annotate the *agent-facing projection*, never the db entity — that's what leaves the UI's own entities policy-free, and why neither needs `"services"` or `"users"` scoping.
 
 ```bash
 cd examples/bookshop
 npm install
-npm test    # annotation/enforce/observe/audit/OTel integration tests against a real CAP service
+npm test    # annotation/enforce/observe/identity/audit/OTel integration tests against a real CAP service
 npm start   # boots a real server at localhost:4004
 ```
 
-With the server up, read the same row through both services and compare:
+With the server up, read the same row three ways:
 
 ```bash
-curl 'http://localhost:4004/odata/v4/agent/Books(201)?$select=title,price'   # price: "***MASKED***"
-curl 'http://localhost:4004/odata/v4/browse/Books(201)?$select=title,price'  # price: "11.11"
+curl 'http://localhost:4004/odata/v4/agent/Books(201)?$select=price'        # "***MASKED***"  (own service)
+curl 'http://localhost:4004/odata/v4/browse/AgentBooks(201)?$select=price'  # "***MASKED***"  (own entity)
+curl 'http://localhost:4004/odata/v4/browse/Books(201)?$select=price'       # "11.11"         (the UI's entity)
 ```
 
-Same table, same row, one annotation — masked for the agent, untouched for the UI.
+One table, one row, no copies — masked for the agent, untouched for the UI. Point your MCP runtime at either agent URL; the UI keeps using `/odata/v4/browse/Books` unchanged.
 
 ## Coming soon (not in v1)
 

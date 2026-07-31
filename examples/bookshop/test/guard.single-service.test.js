@@ -5,18 +5,24 @@ const { GET, expect } = cds.test(__dirname + '/..');
 
 const { registerCapMcpGuard } = require('cap-mcp-guard/lib/adapters/cap');
 
-// The single-service alternative to guard.annotations.test.js: no second CDS service and no
-// "services" scoping at all. The agent and the human hit the very same endpoint, and the only
-// thing separating them is CAP's own authenticated req.user.id, listed under "users".
+// The third way to separate agent from human, after the two in guard.annotations.test.js
+// (own service / own entity): keep one service AND one entity, and split on CAP's own
+// authenticated req.user.id via "users". Same endpoint for both callers.
 //
-// `entities` is deliberately empty — Books.price's mask comes from the @mcp.policy.mask
-// annotation in db/schema.cds, merged into this policy at boot. So this suite also proves the
-// schema-declared policy works identically whichever way the guard is scoped.
-describe('cap-mcp-guard — one service, agent and human separated by identity', () => {
+// The policy is inlined here rather than annotated in the model on purpose: the example's
+// annotations sit on the agent-facing projections (AgentService.Books,
+// CatalogService.AgentBooks), and this suite is about masking CatalogService.Books — the
+// entity the UI itself reads — for one identity only. That is the whole point of "users":
+// it is what you reach for when there is no separate projection to annotate.
+describe('cap-mcp-guard — one service, one entity, agent and human separated by identity', () => {
   const decisions = [];
 
   registerCapMcpGuard(cds, {
-    policyDefinition: { mode: 'enforce', users: ['mcp-agent'], entities: {} },
+    policyDefinition: {
+      mode: 'enforce',
+      users: ['mcp-agent'],
+      entities: { 'CatalogService.Books': { mask: ['price'] } }
+    },
     onDecision: (decision) => decisions.push(decision),
     audit: false // this suite is about the identity split, not about log output
   });

@@ -31,7 +31,6 @@
     "testTimeout": 30000
   },
   "cap-mcp-guard": {
-    "mode": "enforce",
-    "services": ["AgentService"]
+    "mode": "enforce"
   }
 }
