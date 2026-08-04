@@ -103,6 +103,63 @@ describe('generatePseudonym — custom', () => {
   });
 });
 
+describe('generatePseudonym — group', () => {
+  const S = 'secret-1';
+  const SURNAME = 'Yilmaz';
+  const REAL = 'TR330006100519786457841326';
+
+  test('without a group, opaque namespaces per field: one value spelled two ways gets two pseudonyms', () => {
+    const a = generatePseudonym('syd', SURNAME, 'opaque', S);
+    const b = generatePseudonym('soyad', SURNAME, 'opaque', S);
+    expect(a).not.toBe(b);
+  });
+
+  test('a shared group makes opaque produce the same pseudonym across differently-named fields', () => {
+    const a = generatePseudonym('syd', SURNAME, 'opaque', S, undefined, 'surname');
+    const b = generatePseudonym('soyad', SURNAME, 'opaque', S, undefined, 'surname');
+    const c = generatePseudonym('lastName', SURNAME, 'opaque', S, undefined, 'surname');
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  test('the group replaces the field name in the token, so nothing leaks which field it came from', () => {
+    const result = generatePseudonym('syd', SURNAME, 'opaque', S, undefined, 'surname');
+    expect(result).toMatch(/^surname-[0-9a-f]{12}$/);
+  });
+
+  test('different groups still separate the same value', () => {
+    const a = generatePseudonym('syd', SURNAME, 'opaque', S, undefined, 'surname');
+    const b = generatePseudonym('syd', SURNAME, 'opaque', S, undefined, 'maidenName');
+    expect(a).not.toBe(b);
+  });
+
+  test('different values within one group stay distinguishable', () => {
+    const a = generatePseudonym('syd', 'Yilmaz', 'opaque', S, undefined, 'surname');
+    const b = generatePseudonym('soyad', 'Demir', 'opaque', S, undefined, 'surname');
+    expect(a).not.toBe(b);
+  });
+
+  test('is still secret-dependent: rotating the secret changes a grouped pseudonym', () => {
+    const a = generatePseudonym('syd', SURNAME, 'opaque', 'secret-1', undefined, 'surname');
+    const b = generatePseudonym('syd', SURNAME, 'opaque', 'secret-2', undefined, 'surname');
+    expect(a).not.toBe(b);
+  });
+
+  test('iban is already field-name independent, and a group does not disturb that', () => {
+    const plain = generatePseudonym('iban', REAL, 'iban', S);
+    const grouped = generatePseudonym('bankAcct', REAL, 'iban', S, undefined, 'account');
+    expect(generatePseudonym('accountNumber', REAL, 'iban', S)).toBe(plain);
+    expect(generatePseudonym('iban', REAL, 'iban', S, undefined, 'account')).toBe(grouped);
+  });
+
+  test('a group namespaces the iban generator\'s opaque fallback for malformed values', () => {
+    const a = generatePseudonym('syd', 'not-an-iban', 'iban', S, undefined, 'account');
+    const b = generatePseudonym('bankAcct', 'not-an-iban', 'iban', S, undefined, 'account');
+    expect(a).toBe(b);
+    expect(a).toMatch(/^account-[0-9a-f]{12}$/);
+  });
+});
+
 describe('generatePseudonym — unknown type', () => {
   test('throws for a type outside PSEUDONYM_TYPES', () => {
     expect(() => generatePseudonym('IBAN', 'x', 'not-a-real-type', 'secret-1')).toThrow(

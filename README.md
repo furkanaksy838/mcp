@@ -200,10 +200,9 @@ The same, in package.json:
 ```
 
 `"opaque"` is the generic generator — a deterministic token like `email-7f3a9c21e1b4`, carrying
-no information about the real value. It's what you get by default in package.json (a bare field
-name, or a `{ "field" }` object with no `type`), but **in `.cds` you have to name it explicitly**:
-unlike `@mcp.policy.mask`, a bare `@mcp.policy.pseudonymize` with no type carries no value for the
-annotation reader to see, and is ignored.
+no information about the real value. It's the default everywhere a type isn't named: a bare
+field name or a `{ "field" }` object in package.json, and a bare `@mcp.policy.pseudonymize`
+(no type) in `.cds`.
 
 The only built-in typed generator today is `"iban"`: it keeps the real country code and total length, and
 computes a real ISO 7064 MOD 97-10 check digit pair, so the fake IBAN passes standard IBAN
@@ -244,6 +243,52 @@ entry). Because every real value maps to the same output, `"custom"` gives up th
 relational structure (telling two customers apart) that `"opaque"`/`"iban"` preserve — it's
 closer in effect to `mask`, just with your own replacement string instead of the fixed
 `'***MASKED***'`.
+
+#### Keeping one value recognizable across differently-named fields
+
+`"opaque"` derives its token from the **field name plus the value**, so the same real value
+under two differently-named fields comes out as two different pseudonyms. That's the right
+default — unrelated fields shouldn't become correlatable just because they happen to hold
+equal values. But it's wrong for the case where one logical value is simply *spelled*
+differently across a large model: `syd` in one entity, `soyad` in another, `lastName` in a
+third. The agent sees three unrelated tokens and can no longer tell it's one person.
+
+`"group"` names an explicit pseudonym namespace, replacing the field name in the derivation.
+Fields sharing a group produce identical pseudonyms for identical values, however they're
+named:
+
+```cds
+type Soyad : String(100) @mcp.policy.pseudonymize: { type: 'opaque', group: 'surname' };
+
+entity Employees { syd      : Soyad; }
+entity Customers { soyad    : Soyad; }
+entity Vendors   { lastName : Soyad; }
+```
+
+Annotating the **type** rather than each element is what makes this scale: every field of that
+type inherits the policy no matter what it's called, and a field added later can't be
+forgotten. CDS propagates element annotations from a named type to every element using it,
+and on into service projections.
+
+The same in package.json:
+
+```json
+{
+  "cap-mcp-guard": {
+    "entities": {
+      "AgentService.Employees": { "pseudonymize": [{ "field": "syd", "group": "surname" }] },
+      "AgentService.Customers": { "pseudonymize": [{ "field": "soyad", "group": "surname" }] }
+    }
+  }
+}
+```
+
+The group name replaces the field name in the token too (`surname-7f3a9c21e1b4`), so the
+output doesn't disclose which field it came from. Different groups still separate equal values,
+and rotating `CAP_MCP_GUARD_PSEUDONYM_SECRET` still invalidates everything as before. `"iban"`
+is already field-name-independent by construction, so a group is optional there and only
+affects its fallback for malformed values; `"custom"` derives nothing at all, so combining it
+with `"group"` is rejected at config load rather than silently ignored.
 
 **Requires a secret.** Set the `CAP_MCP_GUARD_PSEUDONYM_SECRET` environment variable (or
 pass `pseudonymSecret` directly to `registerCapMcpGuard`) — every pseudonym is derived from

@@ -351,4 +351,81 @@ describe('attachInterceptor', () => {
       expect(results).toEqual([{ ID: 1, salary: '***MASKED***', department_ID: 1 }]);
     });
   });
+
+  describe('pseudonymize', () => {
+    const SECRET = 'test-secret';
+
+    async function readRows(entities, rows, entity = 'Employees') {
+      const srv = createFakeService();
+      attachInterceptor(srv, {
+        policyDefinition: { mode: 'enforce', entities },
+        pseudonymSecret: SECRET
+      });
+      const results = rows;
+      await srv.simulateRequest({ event: 'READ', entity }, results);
+      return results;
+    }
+
+    test('replaces the value with a deterministic pseudonym on the real response', async () => {
+      const [row] = await readRows({ Employees: { pseudonymize: [{ field: 'syd', type: 'opaque' }] } }, [
+        { ID: 1, syd: 'Yilmaz' }
+      ]);
+
+      expect(row.syd).not.toBe('Yilmaz');
+      expect(row.syd).toMatch(/^syd-[0-9a-f]{12}$/);
+    });
+
+    test('leaves the field alone when the row does not carry it', async () => {
+      const [row] = await readRows({ Employees: { pseudonymize: [{ field: 'syd', type: 'opaque' }] } }, [{ ID: 1 }]);
+
+      expect(row).toEqual({ ID: 1 });
+    });
+
+    // The wiring this covers: `group` has to travel policy -> Decision -> generatePseudonym.
+    // Dropping it anywhere in that chain silently falls back to per-field namespacing, which
+    // looks fine in isolation and only shows up as two entities disagreeing about one value.
+    test('a shared group yields the same pseudonym for the same value across differently-named fields', async () => {
+      const [employee] = await readRows(
+        { Employees: { pseudonymize: [{ field: 'syd', type: 'opaque', group: 'surname' }] } },
+        [{ ID: 1, syd: 'Yilmaz' }]
+      );
+      const [customer] = await readRows(
+        { Customers: { pseudonymize: [{ field: 'soyad', type: 'opaque', group: 'surname' }] } },
+        [{ ID: 9, soyad: 'Yilmaz' }],
+        'Customers'
+      );
+
+      expect(employee.syd).toBe(customer.soyad);
+      expect(employee.syd).toMatch(/^surname-[0-9a-f]{12}$/);
+    });
+
+    test('without a group those same two fields disagree, as documented', async () => {
+      const [employee] = await readRows({ Employees: { pseudonymize: [{ field: 'syd', type: 'opaque' }] } }, [
+        { ID: 1, syd: 'Yilmaz' }
+      ]);
+      const [customer] = await readRows(
+        { Customers: { pseudonymize: [{ field: 'soyad', type: 'opaque' }] } },
+        [{ ID: 9, soyad: 'Yilmaz' }],
+        'Customers'
+      );
+
+      expect(employee.syd).not.toBe(customer.soyad);
+    });
+
+    test('observe mode computes the pseudonym but never touches the response', async () => {
+      const srv = createFakeService();
+      attachInterceptor(srv, {
+        policyDefinition: {
+          mode: 'observe',
+          entities: { Employees: { pseudonymize: [{ field: 'syd', type: 'opaque', group: 'surname' }] } }
+        },
+        pseudonymSecret: SECRET
+      });
+
+      const results = [{ ID: 1, syd: 'Yilmaz' }];
+      await srv.simulateRequest({ event: 'READ', entity: 'Employees' }, results);
+
+      expect(results).toEqual([{ ID: 1, syd: 'Yilmaz' }]);
+    });
+  });
 });

@@ -222,6 +222,40 @@ describe('parseConfig', () => {
       );
     });
 
+    test('keeps a "group" on the parsed entry', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Customers: { pseudonymize: [{ field: 'soyad', group: 'surname' }] } }
+      };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([
+        { field: 'soyad', type: 'opaque', group: 'surname' }
+      ]);
+    });
+
+    test('omits "group" entirely when not given, rather than setting it undefined', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: ['soyad'] } } };
+      expect(parseConfig(raw).entities.Customers.pseudonymize).toEqual([{ field: 'soyad', type: 'opaque' }]);
+    });
+
+    test('throws when "group" is not a non-empty string', () => {
+      const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'soyad', group: '' }] } } };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.soyad: "group" must be a non-empty string'
+      );
+    });
+
+    test('throws when "group" is combined with type "custom", which derives nothing from it', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: {
+          Customers: { pseudonymize: [{ field: 'soyad', type: 'custom', value: 'X', group: 'surname' }] }
+        }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.soyad: "group" is not allowed with type "custom"'
+      );
+    });
+
     test('throws when an object entry has no "field"', () => {
       const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ type: 'iban' }] } } };
       expect(() => parseConfig(raw)).toThrow('entities.Customers.pseudonymize entries must have a "field" string');

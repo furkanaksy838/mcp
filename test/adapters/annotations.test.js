@@ -24,11 +24,60 @@ describe('readEntityAnnotations', () => {
     expect(readEntityAnnotations(entityDef)).toEqual({ pseudonymize: [{ field: 'iban', type: 'iban' }] });
   });
 
-  test('a field annotated with a {type, value} object spreads onto the entry', () => {
+  // What CDS actually compiles `@mcp.policy.pseudonymize: {type:'custom', value:'Redacted'}` to:
+  // flattened dotted keys, NOT a nested object. Reading only the unsuffixed key — as this
+  // adapter used to — finds nothing and silently leaves the field unprotected.
+  test('a field annotated with an object gets it as flattened dotted keys, the way CDS emits them', () => {
+    const entityDef = {
+      elements: {
+        name: {
+          type: 'cds.String',
+          '@mcp.policy.pseudonymize.type': 'custom',
+          '@mcp.policy.pseudonymize.value': 'Redacted'
+        }
+      }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      pseudonymize: [{ field: 'name', type: 'custom', value: 'Redacted' }]
+    });
+  });
+
+  test('reads a flattened "group" alongside the type', () => {
+    const entityDef = {
+      elements: {
+        syd: {
+          type: 'cds.String',
+          '@mcp.policy.pseudonymize.type': 'opaque',
+          '@mcp.policy.pseudonymize.group': 'surname'
+        }
+      }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      pseudonymize: [{ field: 'syd', type: 'opaque', group: 'surname' }]
+    });
+  });
+
+  test('a bare @mcp.policy.pseudonymize (compiled to true) means pseudonymize with the default type', () => {
+    const entityDef = { elements: { email: { type: 'cds.String', '@mcp.policy.pseudonymize': true } } };
+    expect(readEntityAnnotations(entityDef)).toEqual({ pseudonymize: [{ field: 'email' }] });
+  });
+
+  test('still accepts a genuinely nested object, which CDS does not emit today', () => {
     const entityDef = {
       elements: { name: { type: 'cds.String', '@mcp.policy.pseudonymize': { type: 'custom', value: 'Redacted' } } }
     };
-    expect(readEntityAnnotations(entityDef)).toEqual({ pseudonymize: [{ field: 'name', type: 'custom', value: 'Redacted' }] });
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      pseudonymize: [{ field: 'name', type: 'custom', value: 'Redacted' }]
+    });
+  });
+
+  test('carries a pseudonymize "group" through from a nested annotation object', () => {
+    const entityDef = {
+      elements: { syd: { type: 'cds.String', '@mcp.policy.pseudonymize': { type: 'opaque', group: 'surname' } } }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      pseudonymize: [{ field: 'syd', type: 'opaque', group: 'surname' }]
+    });
   });
 
   test('reads entity-level maxRows and allowTools', () => {
