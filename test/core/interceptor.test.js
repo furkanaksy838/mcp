@@ -332,6 +332,91 @@ describe('attachInterceptor', () => {
       expect(results[0].department).toEqual({ ID: 1, budget: 2500000 });
     });
 
+    // Regression, found running 0.6.0 against a real CAP project: nested rows used to read
+    // policyDefinition.entities directly, so "users" scoping never reached them. A human user
+    // outside the list got a correctly unmasked top level and masked expanded rows — the same
+    // field readable directly but '***MASKED***' inside $expand.
+    test('honours "users" scoping for expanded rows: an identity outside the list gets them unmasked', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        users: ['mcp-agent'],
+        entities: { Employees: { mask: ['salary'] }, Departments: { mask: ['budget'] } }
+      };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        user: { id: 'fiori-user' },
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, salary: 85000, department: { ID: 1, budget: 2500000 } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].salary).toBe(85000);
+      expect(results[0].department).toEqual({ ID: 1, budget: 2500000 });
+    });
+
+    test('still masks expanded rows for an identity that is in the "users" list', async () => {
+      const srv = createFakeService();
+      const policyDefinition = {
+        mode: 'enforce',
+        users: ['mcp-agent'],
+        entities: { Employees: { mask: ['salary'] }, Departments: { mask: ['budget'] } }
+      };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        user: { id: 'mcp-agent' },
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, salary: 85000, department: { ID: 1, budget: 2500000 } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].salary).toBe('***MASKED***');
+      expect(results[0].department).toEqual({ ID: 1, budget: '***MASKED***' });
+    });
+
+    test('masks expanded rows even when the requested entity has no policy of its own', async () => {
+      const srv = createFakeService();
+      const policyDefinition = { mode: 'enforce', entities: { Departments: { mask: ['budget'] } } };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, salary: 85000, department: { ID: 1, budget: 2500000 } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].salary).toBe(85000);
+      expect(results[0].department).toEqual({ ID: 1, budget: '***MASKED***' });
+    });
+
+    test('observe mode leaves expanded rows untouched', async () => {
+      const srv = createFakeService();
+      const policyDefinition = { mode: 'observe', entities: { Departments: { mask: ['budget'] } } };
+      attachInterceptor(srv, { policyDefinition });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: { elements: { department: { type: 'cds.Association', target: 'Departments' } } }
+      };
+      const results = [{ ID: 1, department: { ID: 1, budget: 2500000 } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].department).toEqual({ ID: 1, budget: 2500000 });
+    });
+
     test('does nothing when the association was not expanded (nav property absent)', async () => {
       const srv = createFakeService();
       const policyDefinition = {
