@@ -237,9 +237,15 @@ no information about the real value. It's the default everywhere a type isn't na
 field name or a `{ "field" }` object in package.json, and a bare `@mcp.policy.pseudonymize`
 (no type) in `.cds`.
 
-The only built-in typed generator today is `"iban"`: it keeps the real country code and total length, and
-computes a real ISO 7064 MOD 97-10 check digit pair, so the fake IBAN passes standard IBAN
-checksum validation — it isn't a real account, but nothing downstream sees it as malformed.
+Two typed generators exist alongside it, both format-preserving so the fake value passes wherever
+the real one would:
+
+- `"iban"` keeps the real country code and total length and computes a real ISO 7064 MOD 97-10
+  check digit pair, so the fake IBAN passes standard IBAN checksum validation. Not a real account,
+  but nothing downstream sees it as malformed.
+- `"uuid"` produces a syntactically valid v4 UUID, for fields declared `UUID` (see
+  [below](#linking-records-use-a-canonical-id-not-a-name)).
+
 A field can't be listed in both `mask` and `pseudonymize` on the same entity (config fails
 to load if it is). More typed generators (e.g. a Luhn-valid fake credit card number) can be
 added later without changing this config shape — anything without a dedicated generator
@@ -322,6 +328,80 @@ and rotating `CAP_MCP_GUARD_PSEUDONYM_SECRET` still invalidates everything as be
 is already field-name-independent by construction, so a group is optional there and only
 affects its fallback for malformed values; `"custom"` derives nothing at all, so combining it
 with `"group"` is rejected at config load rather than silently ignored.
+
+#### Linking records: use a canonical id, not a name
+
+A shared surname is not a shared person — two people can both be `Yilmaz`. If the agent needs to
+follow one person across entities, pseudonymize the id everyone already joins on, not the name:
+
+```cds
+type ProtectedPersonId : UUID @mcp.policy.pseudonymize: { type: 'uuid', group: 'person-id' };
+
+entity Employees { personId   : ProtectedPersonId; }
+entity Managers  { employeeId : ProtectedPersonId; }
+```
+
+Note `type: 'uuid'` rather than `opaque`. `opaque` produces a token like
+`person-id-0787abd9060d`, and a field declared `UUID` surfaces as `Edm.Guid` — handing that token
+back makes the response contradict its own metadata and anything that parses GUIDs rejects it.
+`uuid` produces a deterministic, syntactically valid v4 UUID instead, the same way `iban` produces
+a checksum-valid IBAN: `0787abd9-060d-4204-b5e9-2a34a462023d`, identical for the same real id and
+group, different for a different one, and not the real value.
+
+#### Keeping groups honest: an allowlist and a startup lint
+
+A group is a namespace shared by name, so a typo in one is silent and expensive: `person-surename`
+in one entity and `person-surname` in another produce two namespaces that will never match, and
+nothing at runtime says so. Declare the groups you actually use and a stray one becomes a startup
+error:
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "pseudonymGroups": ["person-id", "person-surname", "iban"],
+    "lint": { "strict": true }
+  }
+}
+```
+
+```text
+entities.Customers.pseudonymize.surname: group "person-surename" is not in "pseudonymGroups"
+("person-id", "person-surname", "iban")
+```
+
+`pseudonymGroups` is optional — omit it and groups stay free-form, which is fine for a small
+model. Once declared it is enforced, since that is what an allowlist is for.
+
+`lint` prints what the policy will actually do, once, at startup, and checks the parts a machine
+can decide:
+
+```text
+[cap-mcp-guard] pseudonym groups:
+[cap-mcp-guard]   person-id
+[cap-mcp-guard]     - CatalogService.AgentEmployees.personId
+[cap-mcp-guard]     - CatalogService.AgentManagers.employeeId
+[cap-mcp-guard]   person-surname
+[cap-mcp-guard]     - CatalogService.AgentEmployees.syd
+[cap-mcp-guard] warning: CatalogService.AgentEmployees.salary: masking a cds.Decimal field yields
+[cap-mcp-guard]          null rather than '***MASKED***', since the placeholder is a string.
+```
+
+The group map is the point: a mistyped or duplicated group shows up as a group of one. Errors are
+generator/field-type mismatches — a `uuid` pseudonym on a string field, a string pseudonym on a
+UUID or numeric field — the class of defect that looks fine in the guard's own audit log and only
+surfaces at whatever consumes the payload. `lint: true` reports; `lint: { strict: true }` refuses
+to start:
+
+```text
+Error: [cap-mcp-guard] policy lint failed with 1 error(s) and lint.strict is set:
+  - CatalogService.ProbeView.pid: pseudonymize type "opaque" produces a string, but the field is
+    cds.UUID. Use type "uuid" for a UUID field.
+```
+
+What it deliberately does *not* check is whether a field is bound to the *right* group — a linter
+can't know that `Customers.surname` and `Employees.syd` are the same concept, only that they claim
+to be. That part is what the group map is for reading.
 
 **Requires a secret.** Set the `CAP_MCP_GUARD_PSEUDONYM_SECRET` environment variable (or
 pass `pseudonymSecret` directly to `registerCapMcpGuard`) — every pseudonym is derived from

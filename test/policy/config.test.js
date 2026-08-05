@@ -152,6 +152,86 @@ describe('parseConfig', () => {
     });
   });
 
+  describe('"pseudonymGroups"', () => {
+    test('accepts an allowlist and returns it', () => {
+      const raw = { mode: 'enforce', pseudonymGroups: ['person-id', 'person-surname'] };
+      expect(parseConfig(raw).pseudonymGroups).toEqual(['person-id', 'person-surname']);
+    });
+
+    test('is absent from the PolicyDefinition when omitted, keeping groups free-form', () => {
+      expect(parseConfig({ mode: 'enforce' }).pseudonymGroups).toBeUndefined();
+    });
+
+    test('accepts a group that is on the list', () => {
+      const raw = {
+        mode: 'enforce',
+        pseudonymGroups: ['person-surname'],
+        entities: { Employees: { pseudonymize: [{ field: 'syd', group: 'person-surname' }] } }
+      };
+      expect(() => parseConfig(raw)).not.toThrow();
+    });
+
+    // The typo case the allowlist exists for: two entities meant to share a namespace end up in
+    // two, and nothing at runtime says so — the pseudonyms just never match.
+    test('throws for a group that is not on the list, naming both the group and the list', () => {
+      const raw = {
+        mode: 'enforce',
+        pseudonymGroups: ['person-surname'],
+        entities: { Customers: { pseudonymize: [{ field: 'surname', group: 'person-surename' }] } }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Customers.pseudonymize.surname: group "person-surename" is not in "pseudonymGroups" ("person-surname")'
+      );
+    });
+
+    test('ignores entries that use no group at all', () => {
+      const raw = {
+        mode: 'enforce',
+        pseudonymGroups: ['person-id'],
+        entities: { Employees: { pseudonymize: [{ field: 'syd' }] } }
+      };
+      expect(() => parseConfig(raw)).not.toThrow();
+    });
+
+    test('throws when the allowlist is not an array', () => {
+      expect(() => parseConfig({ mode: 'enforce', pseudonymGroups: 'person-id' })).toThrow(
+        '"pseudonymGroups" must be an array, got string'
+      );
+    });
+
+    test('throws when an allowlist entry is not a non-empty string', () => {
+      expect(() => parseConfig({ mode: 'enforce', pseudonymGroups: ['person-id', ''] })).toThrow(
+        '"pseudonymGroups" entries must be non-empty strings, got ""'
+      );
+    });
+  });
+
+  describe('"lint"', () => {
+    test('accepts true', () => {
+      expect(parseConfig({ mode: 'enforce', lint: true }).lint).toBe(true);
+    });
+
+    test('accepts { strict: true }', () => {
+      expect(parseConfig({ mode: 'enforce', lint: { strict: true } }).lint).toEqual({ strict: true });
+    });
+
+    test('is absent when omitted, so the lint stays off by default', () => {
+      expect(parseConfig({ mode: 'enforce' }).lint).toBeUndefined();
+    });
+
+    test('throws when lint is neither a boolean nor a mapping', () => {
+      expect(() => parseConfig({ mode: 'enforce', lint: 'strict' })).toThrow(
+        '"lint" must be a boolean or a mapping, got string'
+      );
+    });
+
+    test('throws when lint.strict is not a boolean', () => {
+      expect(() => parseConfig({ mode: 'enforce', lint: { strict: 'yes' } })).toThrow(
+        '"lint.strict" must be a boolean, got string'
+      );
+    });
+  });
+
   describe('entities.<name>.pseudonymize', () => {
     test('normalizes a bare string entry to { field, type: "opaque" }', () => {
       const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: ['Email'] } } };
@@ -181,7 +261,7 @@ describe('parseConfig', () => {
     test('throws when an entry has an unknown type', () => {
       const raw = { mode: 'enforce', entities: { Customers: { pseudonymize: [{ field: 'IBAN', type: 'creditCard' }] } } };
       expect(() => parseConfig(raw)).toThrow(
-        'entities.Customers.pseudonymize.IBAN.type must be one of opaque, iban, custom (got "creditCard")'
+        'entities.Customers.pseudonymize.IBAN.type must be one of opaque, iban, uuid, custom (got "creditCard")'
       );
     });
 
@@ -254,6 +334,11 @@ describe('parseConfig', () => {
       expect(() => parseConfig(raw)).toThrow(
         'entities.Customers.pseudonymize.soyad: "group" is not allowed with type "custom"'
       );
+    });
+
+    test('accepts the "uuid" type', () => {
+      const raw = { mode: 'enforce', entities: { Employees: { pseudonymize: [{ field: 'personId', type: 'uuid' }] } } };
+      expect(parseConfig(raw).entities.Employees.pseudonymize).toEqual([{ field: 'personId', type: 'uuid' }]);
     });
 
     test('throws when an object entry has no "field"', () => {

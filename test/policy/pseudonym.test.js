@@ -103,6 +103,53 @@ describe('generatePseudonym — custom', () => {
   });
 });
 
+describe('generatePseudonym — uuid', () => {
+  const S = 'secret-1';
+  const REAL = '11111111-2222-3333-4444-555555555555';
+  const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  test('produces a syntactically valid v4 UUID', () => {
+    expect(generatePseudonym('personId', REAL, 'uuid', S)).toMatch(UUID_SHAPE);
+  });
+
+  test('is deterministic for the same field, value and secret', () => {
+    const a = generatePseudonym('personId', REAL, 'uuid', S);
+    const b = generatePseudonym('personId', REAL, 'uuid', S);
+    expect(a).toBe(b);
+  });
+
+  test('never returns the real value', () => {
+    expect(generatePseudonym('personId', REAL, 'uuid', S)).not.toBe(REAL);
+  });
+
+  test('maps different values to different UUIDs', () => {
+    const a = generatePseudonym('personId', REAL, 'uuid', S);
+    const b = generatePseudonym('personId', '99999999-8888-7777-6666-555555555555', 'uuid', S);
+    expect(a).not.toBe(b);
+  });
+
+  test('changes when the secret is rotated', () => {
+    const a = generatePseudonym('personId', REAL, 'uuid', 'secret-1');
+    const b = generatePseudonym('personId', REAL, 'uuid', 'secret-2');
+    expect(a).not.toBe(b);
+  });
+
+  // The canonical-id case: one person's id lives under employeeId in one entity and personId in
+  // another, and the agent has to see them as the same person without ever seeing the real id.
+  test('a shared group makes it consistent across differently-named id fields', () => {
+    const a = generatePseudonym('personId', REAL, 'uuid', S, undefined, 'person-id');
+    const b = generatePseudonym('employeeId', REAL, 'uuid', S, undefined, 'person-id');
+    expect(a).toBe(b);
+    expect(a).toMatch(UUID_SHAPE);
+  });
+
+  test('namespaces per field without a group, so unrelated id fields stay unlinked', () => {
+    const a = generatePseudonym('personId', REAL, 'uuid', S);
+    const b = generatePseudonym('employeeId', REAL, 'uuid', S);
+    expect(a).not.toBe(b);
+  });
+});
+
 describe('generatePseudonym — group', () => {
   const S = 'secret-1';
   const SURNAME = 'Yilmaz';
