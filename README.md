@@ -166,6 +166,39 @@ Annotation-derived and package.json-derived config for the same entity are merge
 - `maxRows` / `allowTools` — the package.json value wins when both are present.
 - A field listed under `mask` from one source and `pseudonymize` from the other fails loudly at startup, exactly like configuring both in the same package.json entity.
 
+### What a masked value looks like, per field type
+
+A property has exactly one type — the one the service publishes in `$metadata` — so the
+replacement has to fit it. `'***MASKED***'` is a string, and writing it into an `Edm.Decimal` or
+`Edm.Date` property produces a response that contradicts its own metadata: Fiori Elements renders
+an empty cell (which reads as *no value*, not *withheld*), and a generated client fails to parse.
+
+So the replacement is chosen from the field's compiled type:
+
+| Field type | Masked to |
+| --- | --- |
+| `String`, `LargeString` | `'***MASKED***'` |
+| everything else — numbers, dates, booleans, `UUID`, … | `null` |
+
+Both are type-valid, and either way the record of *which* fields were withheld travels in the
+Decision, so it reaches the audit log and the OTel span even when the payload just shows `null`.
+(`UUID` is in the second group on purpose: it's a string in JS but surfaces as `Edm.Guid`, and the
+placeholder isn't a GUID.)
+
+If you want the placeholder *visible* on a numeric field — say a Fiori list where a human should
+see that a column was withheld rather than empty — model it as text on the agent-facing
+projection, and it becomes a string field:
+
+```cds
+@readonly entity AgentEmployees as projection on my.Employees {
+  *,
+  cast(salary as String(20)) as salary   // now masked to '***MASKED***'
+};
+```
+
+The UI's own projection keeps `salary` as `Decimal` and keeps reading real numbers — one field,
+one type, per projection.
+
 ### Masking vs. pseudonymizing
 
 Plain `mask` replaces every real value with the same fixed string, `'***MASKED***'` —
@@ -357,7 +390,7 @@ identity verification within it.
 
 ## What you get, per request
 
-- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'`, and fields under `pseudonymize` with a deterministic fake value (see above), in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Also applied one level deep to any `$expand`ed association whose target entity has its own policy.
+- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'` on string fields and `null` on every other type (see [above](#what-a-masked-value-looks-like-per-field-type)), and fields under `pseudonymize` with a deterministic fake value, in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Also applied one level deep to any `$expand`ed association whose target entity has its own policy — evaluated per nested entity, so identity scoping applies there too.
 - **Tool/row enforcement** — in `enforce` mode, a request naming an operation outside `allowTools` is rejected with a 403 before it runs; a response exceeding `maxRows` is truncated to that limit. In `observe` mode both are only computed and reported, never applied.
 - **Audit log** — every request produces a structured JSON line (Context + Decision), to stdout and/or a file you choose.
 - **OpenTelemetry spans** — every request also becomes a real span via `@opentelemetry/api`. If your app already has an OTel SDK configured (any OTLP-compatible backend — Grafana, Jaeger, Datadog, SAP Cloud Logging), the guard's spans just show up there, correctly linked into the caller's trace via W3C Trace Context (`traceparent`/`tracestate`) when present — no extra mapping needed, because the context schema was built against OTel's GenAI semantic conventions (`gen_ai.*`) from the start.

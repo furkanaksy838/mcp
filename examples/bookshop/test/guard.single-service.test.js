@@ -37,7 +37,8 @@ describe('cap-mcp-guard — one service, one entity, agent and human separated b
   it('masks the annotated field for the identity listed in "users"', async () => {
     const { data } = await GET(URL, as('mcp-agent'));
 
-    expect(data.price).to.equal('***MASKED***');
+    // Edm.Decimal -> null, not the string placeholder.
+    expect(data.price).to.be.null;
     expect(data.title).to.equal('Wuthering Heights');
   });
 

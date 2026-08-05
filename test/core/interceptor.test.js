@@ -437,6 +437,112 @@ describe('attachInterceptor', () => {
     });
   });
 
+  // A field has exactly one type — the one the service publishes — so '***MASKED***' can only go
+  // into a string field. Anywhere else the response would contradict its own $metadata and typed
+  // consumers can't render it: Fiori Elements shows an empty cell, which reads as "no value"
+  // rather than "withheld". Non-string fields are masked to null instead.
+  describe('type-aware mask values', () => {
+    async function read(elements, row) {
+      const srv = createFakeService();
+      attachInterceptor(srv, {
+        policyDefinition: { mode: 'enforce', entities: { Employees: { mask: Object.keys(row).filter((k) => k !== 'ID') } } }
+      });
+      const results = [row];
+      await srv.simulateRequest({ event: 'READ', entity: 'Employees', target: { elements } }, results);
+      return results[0];
+    }
+
+    test('uses the placeholder for a string field', async () => {
+      const row = await read({ nationalId: { type: 'cds.String' } }, { ID: 1, nationalId: '12345678901' });
+      expect(row.nationalId).toBe('***MASKED***');
+    });
+
+    test('uses the placeholder for a large string field', async () => {
+      const row = await read({ notes: { type: 'cds.LargeString' } }, { ID: 1, notes: 'a long note' });
+      expect(row.notes).toBe('***MASKED***');
+    });
+
+    test('masks a decimal to null rather than a string the type cannot hold', async () => {
+      const row = await read({ salary: { type: 'cds.Decimal' } }, { ID: 1, salary: 85000 });
+      expect(row.salary).toBeNull();
+    });
+
+    test('masks integer, boolean, date and timestamp fields to null too', async () => {
+      const row = await read(
+        {
+          headcount: { type: 'cds.Integer' },
+          active: { type: 'cds.Boolean' },
+          hiredOn: { type: 'cds.Date' },
+          changedAt: { type: 'cds.Timestamp' }
+        },
+        { ID: 1, headcount: 12, active: true, hiredOn: '2020-01-01', changedAt: '2020-01-01T00:00:00Z' }
+      );
+      expect(row.headcount).toBeNull();
+      expect(row.active).toBeNull();
+      expect(row.hiredOn).toBeNull();
+      expect(row.changedAt).toBeNull();
+    });
+
+    // cds.UUID is a string in JS but surfaces as Edm.Guid, and the placeholder is not a GUID.
+    test('masks a UUID to null, since the placeholder is not a valid GUID', async () => {
+      const row = await read({ ref: { type: 'cds.UUID' } }, { ID: 1, ref: '11111111-2222-3333-4444-555555555555' });
+      expect(row.ref).toBeNull();
+    });
+
+    test('mixes both in one row, per field', async () => {
+      const row = await read(
+        { name: { type: 'cds.String' }, salary: { type: 'cds.Decimal' } },
+        { ID: 1, name: 'Ahmet', salary: 85000 }
+      );
+      expect(row.name).toBe('***MASKED***');
+      expect(row.salary).toBeNull();
+    });
+
+    test('falls back to the placeholder when the request carries no elements to type against', async () => {
+      const srv = createFakeService();
+      attachInterceptor(srv, { policyDefinition: { mode: 'enforce', entities: { Employees: { mask: ['salary'] } } } });
+      const results = [{ ID: 1, salary: 85000 }];
+
+      await srv.simulateRequest({ event: 'READ', entity: 'Employees' }, results);
+
+      expect(results[0].salary).toBe('***MASKED***');
+    });
+
+    test('applies the same rule to expanded rows, using the association target\'s elements', async () => {
+      const srv = createFakeService();
+      attachInterceptor(srv, {
+        policyDefinition: {
+          mode: 'enforce',
+          entities: { Employees: { mask: ['salary'] }, Departments: { mask: ['budget', 'code'] } }
+        }
+      });
+
+      const req = {
+        event: 'READ',
+        entity: 'Employees',
+        target: {
+          elements: {
+            salary: { type: 'cds.Decimal' },
+            department: {
+              type: 'cds.Association',
+              _target: {
+                name: 'Departments',
+                elements: { budget: { type: 'cds.Decimal' }, code: { type: 'cds.String' } }
+              }
+            }
+          }
+        }
+      };
+      const results = [{ ID: 1, salary: 85000, department: { ID: 1, budget: 2500000, code: 'ENG' } }];
+
+      await srv.simulateRequest(req, results);
+
+      expect(results[0].salary).toBeNull();
+      expect(results[0].department.budget).toBeNull();
+      expect(results[0].department.code).toBe('***MASKED***');
+    });
+  });
+
   describe('pseudonymize', () => {
     const SECRET = 'test-secret';
 

@@ -25,7 +25,8 @@ describe('cap-mcp-guard M4 — enforce mode masks fields on the real response', 
 
     expect(data.value.length).to.be.greaterThan(0);
     for (const book of data.value) {
-      expect(book.price).to.equal('***MASKED***');
+      // Edm.Decimal -> null, not the string placeholder (see resolveMaskValues).
+      expect(book.price).to.be.null;
     }
   });
 

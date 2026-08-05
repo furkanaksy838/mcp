@@ -19,11 +19,16 @@ describe('cap-mcp-guard — @mcp.policy on the agent-facing projections only', (
 
       expect(data.value.length).to.be.greaterThan(0);
       for (const book of data.value) {
-        expect(book.price).to.equal('***MASKED***');
+        // price is Edm.Decimal: masked to null, since '***MASKED***' is a string the
+        // property's own type can't hold. Authors.placeOfDeath below is Edm.String and does
+        // get the placeholder.
+        expect(book.price).to.be.null;
       }
     });
 
-    it('applies annotations from a second entity as well', async () => {
+    // The counterpart to the null above: placeOfDeath is Edm.String, so the placeholder fits and
+    // is what the agent gets. Same policy, different replacement, decided by the field's type.
+    it('applies annotations from a second entity as well, with the placeholder on a string field', async () => {
       const { data } = await GET('/odata/v4/agent/Authors');
 
       const known = data.value.filter((author) => author.placeOfDeath !== null);
@@ -49,7 +54,7 @@ describe('cap-mcp-guard — @mcp.policy on the agent-facing projections only', (
 
       expect(data.value.length).to.be.greaterThan(0);
       for (const book of data.value) {
-        expect(book.price).to.equal('***MASKED***');
+        expect(book.price).to.be.null; // Edm.Decimal, so null rather than the string placeholder
       }
     });
 
@@ -89,7 +94,7 @@ describe('cap-mcp-guard — @mcp.policy on the agent-facing projections only', (
       const ui = await GET('/odata/v4/browse/Books(201)?$select=ID,title,price');
 
       expect(agent.data.title).to.equal(ui.data.title);
-      expect(agent.data.price).to.equal('***MASKED***');
+      expect(agent.data.price).to.be.null;
       expect(ui.data.price).to.match(/^\d+\.\d+$/);
     });
   });
