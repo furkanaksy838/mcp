@@ -470,12 +470,57 @@ identity verification within it.
 
 ## What you get, per request
 
-- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'` on string fields and `null` on every other type (see [above](#what-a-masked-value-looks-like-per-field-type)), and fields under `pseudonymize` with a deterministic fake value, in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Also applied one level deep to any `$expand`ed association whose target entity has its own policy — evaluated per nested entity, so identity scoping applies there too.
-- **Tool/row enforcement** — in `enforce` mode, a request naming an operation outside `allowTools` is rejected with a 403 before it runs; a response exceeding `maxRows` is truncated to that limit. In `observe` mode both are only computed and reported, never applied.
+- **Masking** — in `enforce` mode, fields listed under `mask` are replaced with `'***MASKED***'` on string fields and `null` on every other type (see [above](#what-a-masked-value-looks-like-per-field-type)), and fields under `pseudonymize` with a deterministic fake value, in the real response. In `observe` mode nothing is touched; the guard only computes what *would* happen. Applied at **every** level of `$expand`, not just the first: each nested entity is evaluated on its own, so identity scoping applies there too and an association path back to an already-masked entity doesn't hand over raw values on the second hop.
+- **Query-side refusal** — masking rewrites the response, but `$filter`, `$orderby`, `$groupby` and aggregations run against the *real* column, so the result set itself discloses what the payload hides: which rows come back, in what order, what they sum to — and repeated range filters recover an exact value by bisection. In `enforce` mode a request that computes over a masked or pseudonymized field is rejected with 403 before it runs. Plainly *selecting* such a field stays allowed, since that is what masking is for. In `observe` mode the refusal is reported, not applied.
+- **Write refusal** — a caller that only ever reads a field masked must not be able to write it, or it replaces the real value with the placeholder (or with a pseudonym plausible enough that nobody notices). In `enforce` mode a `CREATE`/`UPDATE`/`UPSERT` whose payload carries a protected field is rejected with 403. `@readonly` on the agent-facing projection is still the better first line; this is what catches the case where it was forgotten.
+- **Tool/row enforcement** — in `enforce` mode, a request naming an operation outside `allowTools` is rejected with a 403 before it runs. `maxRows` is pushed onto the query as a `LIMIT` before it executes — so the database stops reading rows that were always going to be discarded — and the response is truncated to the same bound. A client asking for fewer rows keeps its own smaller limit. In `observe` mode both are only computed and reported, never applied.
 - **Audit log** — every request produces a structured JSON line (Context + Decision), to stdout and/or a file you choose.
 - **OpenTelemetry spans** — every request also becomes a real span via `@opentelemetry/api`. If your app already has an OTel SDK configured (any OTLP-compatible backend — Grafana, Jaeger, Datadog, SAP Cloud Logging), the guard's spans just show up there, correctly linked into the caller's trace via W3C Trace Context (`traceparent`/`tracestate`) when present — no extra mapping needed, because the context schema was built against OTel's GenAI semantic conventions (`gen_ai.*`) from the start.
 
-All three run independently and can each be disabled per-call (`audit: false`, `otel: false`) if you're wiring `registerCapMcpGuard` yourself instead of relying on auto-discovery.
+Audit and OTel run independently of each other and can each be disabled per-call (`audit: false`,
+`otel: false`) if you're wiring `registerCapMcpGuard` yourself instead of relying on
+auto-discovery.
+
+## Known limits
+
+The guard rewrites responses and refuses requests. It is not an authorization layer, and a few
+things follow from that — worth knowing before you rely on it.
+
+**The un-guarded path stays open.** Scoping with `"services"` doesn't stop an agent from calling a
+service that isn't in the list; it stops the guard from touching that service. Same for an
+agent-facing entity: `AgentEmployees` being masked says nothing about `Employees` next to it. Close
+the human-facing surface with CAP's own `@requires` / `@restrict`, or don't tell the agent about it
+(an entity that isn't in the MCP runtime's tool list is one it can't call).
+
+**Refusal is not the same as concealment.** A 403 on `$filter=salary gt 100000` tells the caller
+that `salary` is protected — and `$metadata` lists the field either way. If a field's *existence*
+is sensitive, leave it out of the agent's projection (`excluding { salary }`) rather than mask it.
+An absent field can't be selected, filtered, sorted, aggregated or navigated to, which makes
+`excluding` strictly stronger than any policy here. Mask what the agent must know about but
+shouldn't read; exclude everything else.
+
+**Nested query options aren't checked.** A `$filter` *inside* an `$expand` belongs to the nested
+entity and isn't matched against that entity's policy, only the top level's. The nested rows still
+come back masked; what leaks is which of them come back. `@Capabilities.ExpandRestrictions` or
+cutting the association on the agent's projection closes it.
+
+**Masked columns are still read.** The refusal above stops the query from *computing* over a
+protected field, but a plain `$select` of it still fetches the real value from the database before
+the response is rewritten. That's a cost, not a disclosure — the value never leaves the process —
+but on a wide table it is a real one.
+
+**Row count is bounded, not the work.** `maxRows` caps rows. It doesn't cap columns, joins, or the
+cost of a `$filter` over an unprotected but unindexed field.
+
+**Uniqueness leaks through pseudonyms, by design.** Two rows sharing a real value share a
+pseudonym; that is the whole point, and it means an agent can count distinct values and spot
+duplicates. If even that is too much, use `mask` — and if the *shape* matters (a valid IBAN tells
+you the country), use `type: "custom"` or exclude the field.
+
+**Prefer endpoint scoping over identity scoping.** `"users"` is only as trustworthy as the app's
+authentication: with CAP's `mocked` auth an agent can simply present another user's name. Splitting
+the agent's surface into its own service or its own entity puts the boundary in the URL, where
+there is nothing to impersonate.
 
 ## Try it
 
