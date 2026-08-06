@@ -463,6 +463,85 @@ the server fails to start rather than silently producing unprotected data. Rotat
 secret invalidates every previously-issued pseudonym (the same real value will map to a new
 fake one from then on) — this is expected, not a bug.
 
+### Separating the agent from the UI: three shapes
+
+When the same tables serve both a human UI and an agent, masking everything is wrong — the UI
+would see placeholders too. Something has to tell the two apart, and there are exactly three
+things that can: **which service** the request arrived at, **which entity** it named, or **who**
+sent it. Each is a subsection below; this is how to pick.
+
+| | Own service | Own entity | Identity |
+| --- | --- | --- | --- |
+| Config | `"services": [...]` | none | `"users": [...]` |
+| Extra CDS objects | one service | one entity per guarded table | none |
+| Needs a trustworthy IdP | no | no | **yes** |
+| Placeholder on a numeric field | via `cast` | via `cast` | via `"maskTypeSafe": false` |
+| UI requests reach the guard | no | yes, and pass through | yes, and pass through |
+| UI requests in the audit log | no | yes | yes |
+| Agent can reach the unmasked copy | only by calling a URL it wasn't given | same | **by presenting another identity** |
+
+Pick **identity** only when you cannot add a projection — you don't own the model, or the agent is
+contractually bound to an existing entity. It is the smallest change and the weakest boundary: with
+CAP's `mocked` auth an agent simply sends another user's name, so it is worth having only behind
+XSUAA, IAS, Entra, Okta or a gateway that terminates authentication.
+
+Otherwise put the boundary in the URL, where there is nothing to impersonate. Choose **own entity**
+by default and **own service** when UI traffic is heavy enough that you don't want it passing
+through the guard at all (it is the only shape where the interceptor never attaches to the UI's
+service, so those requests cost nothing and produce no audit lines).
+
+Whichever you pick, the field-level decisions are the same and are worth making in this order:
+
+1. **Leave it out** of what the agent reads, if it has no business with it. An absent field can't be
+   selected, filtered, sorted, aggregated or navigated to — strictly stronger than any policy here.
+2. **`mask`** it if the agent should know the field exists but never its value.
+3. **`pseudonymize`** it if the agent has to reason across rows — count distinct values, spot
+   duplicates, follow one person through the model — without seeing the real thing.
+
+### Scoping by entity, without a second service
+
+Give the agent its own *entity* inside the service the UI already uses. The guard keys its policy by
+entity name, so one carries a policy and the other simply has no entry — which is why this shape
+needs no `"services"` and no `"users"` at all:
+
+```cds
+service CatalogService {
+  // With two projections of one db entity in a service, CDS can't guess which an association
+  // should point at. Naming the UI's keeps navigation resolving to the unmasked pair.
+  @cds.redirection.target
+  entity Employees as projection on my.Employees;
+
+  @readonly entity AgentEmployees as projection on my.Employees {
+    ID, name, role,
+    cast(salary as String(20)) as salary,
+    iban
+  };
+}
+
+annotate CatalogService.AgentEmployees with {
+  salary @mcp.policy.mask;
+  iban   @mcp.policy.pseudonymize: 'iban';
+};
+```
+
+```json
+{ "cap-mcp-guard": { "mode": "enforce" } }
+```
+
+Three things make this shape hold, and skipping any of them quietly undoes it:
+
+- **Annotate the agent's projection, never the db entity.** A `@mcp.policy` annotation on
+  `my.Employees` propagates to *every* projection of it, the UI's included.
+- **List fields instead of `*`.** Under a wildcard, a sensitive column added to `my.Employees`
+  tomorrow appears in the agent's view immediately and unmasked, since the policy names fields and a
+  new one isn't among them. Listing makes the agent's surface an allowlist.
+- **Leave the associations out.** Included, they redirect to the entity marked
+  `@cds.redirection.target` — the unmasked one — and `AgentEmployees?$expand=department` hands over
+  real values straight past the policy.
+
+[`examples/bookshop`](examples/bookshop) ships this shape and the next one side by side, both
+covered by integration tests.
+
 ### Scoping the guard to specific services
 
 If the same entities are served both to a human-facing UI and to an AI/MCP agent, masking
@@ -516,6 +595,12 @@ the same endpoint. This is only as secure as your CAP app's auth strategy — it
 real, verified identity provider (XSUAA/IAS/JWT) in production. `mocked` auth (fine for local
 dev, as `examples/bookshop` uses) lets `req.user.id` be set by an untrusted client-supplied
 header, which defeats this entirely.
+
+Because both audiences read the same entity here, a field has one type for both of them and there
+is no agent-side projection to `cast` in. That is what `"maskTypeSafe": false` is for — see
+[Getting the placeholder onto a non-string field](#getting-the-placeholder-onto-a-non-string-field).
+It is safe in exactly this shape: Fiori never receives a masked payload, so the only consumer of the
+placeholder is something reading JSON.
 
 `"services"` and `"users"` compose — set both if you want a dedicated AI-facing service *and*
 identity verification within it.
