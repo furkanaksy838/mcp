@@ -185,19 +185,31 @@ Decision, so it reaches the audit log and the OTel span even when the payload ju
 (`UUID` is in the second group on purpose: it's a string in JS but surfaces as `Edm.Guid`, and the
 placeholder isn't a GUID.)
 
-If you want the placeholder *visible* on a numeric field — say a Fiori list where a human should
-see that a column was withheld rather than empty — model it as text on the agent-facing
-projection, and it becomes a string field:
+There are two ways to get the placeholder *visible* on a non-string field, and which one fits
+depends on whether the agent has a projection of its own.
+
+**It does** — model the field as text there, and it genuinely becomes a string field:
 
 ```cds
 @readonly entity AgentEmployees as projection on my.Employees {
-  *,
-  cast(salary as String(20)) as salary   // now masked to '***MASKED***'
+  ID, name, role,
+  cast(salary as String(20)) as salary,   // now masked to '***MASKED***'
+  iban
 };
 ```
 
 The UI's own projection keeps `salary` as `Decimal` and keeps reading real numbers — one field,
-one type, per projection.
+one type, per projection, and no metadata is contradicted.
+
+**It doesn't** — one entity serves both audiences and identity decides who sees what (`"users"`
+scoping). Then there is no second projection to cast in, and the type-safe default is working
+against you: Fiori always receives real Decimals here, so the masked copy only ever reaches
+something reading JSON. Turn it off (see
+[below](#getting-the-placeholder-onto-a-non-string-field)):
+
+```json
+{ "cap-mcp-guard": { "mode": "enforce", "users": ["mcp-agent"], "maskTypeSafe": false } }
+```
 
 ### Masking vs. pseudonymizing
 
@@ -402,6 +414,46 @@ Error: [cap-mcp-guard] policy lint failed with 1 error(s) and lint.strict is set
 What it deliberately does *not* check is whether a field is bound to the *right* group — a linter
 can't know that `Customers.surname` and `Employees.syd` are the same concept, only that they claim
 to be. That part is what the group map is for reading.
+
+#### Getting the placeholder onto a non-string field
+
+The type-safe default assumes the masked payload reaches a typed consumer. That is true when the
+UI and the agent read the same entity through different projections — but not when they read the
+*same* entity and only the agent's copy is masked, as with `"users"` scoping. There Fiori always
+receives real Decimals, the masked copy only ever reaches something reading JSON, and a `null` it
+can't distinguish from an empty column is strictly less informative than a placeholder.
+
+`"maskTypeSafe": false` says so:
+
+```json
+{
+  "cap-mcp-guard": {
+    "mode": "enforce",
+    "users": ["mcp-agent"],
+    "maskTypeSafe": false,
+    "maskValue": "***MASKED***"
+  }
+}
+```
+
+```json
+{ "ID": 1, "name": "***MASKED***", "salary": "***MASKED***", "hiredOn": "***MASKED***" }
+```
+
+`maskValue` sets the text (default `'***MASKED***'`) and applies either way. With `maskTypeSafe`
+off, a non-string field's response contradicts its own `$metadata` — which is exactly the trade
+being made, so the startup lint says which of the two is in force rather than staying silent:
+
+```text
+[cap-mcp-guard] warning: CatalogService.Employees.salary: "maskTypeSafe" is off, so this
+                         cds.Decimal field is masked to the string "***MASKED***" and the response
+                         contradicts its own $metadata. Fine for a JSON-reading agent, not for a
+                         typed client such as Fiori.
+```
+
+Use it when one entity serves both audiences and identity decides who sees what. When the agent
+has a projection of its own, `cast(salary as String(20)) as salary` gets you the same placeholder
+with no metadata contradiction, because there the field genuinely *is* text.
 
 **Requires a secret.** Set the `CAP_MCP_GUARD_PSEUDONYM_SECRET` environment variable (or
 pass `pseudonymSecret` directly to `registerCapMcpGuard`) — every pseudonym is derived from

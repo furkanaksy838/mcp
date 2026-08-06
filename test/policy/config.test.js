@@ -152,6 +152,37 @@ describe('parseConfig', () => {
     });
   });
 
+  describe('"maskValue" / "maskTypeSafe"', () => {
+    test('accepts a custom placeholder', () => {
+      expect(parseConfig({ mode: 'enforce', maskValue: '***GIZLI***' }).maskValue).toBe('***GIZLI***');
+    });
+
+    test('accepts maskTypeSafe: false', () => {
+      expect(parseConfig({ mode: 'enforce', maskTypeSafe: false }).maskTypeSafe).toBe(false);
+    });
+
+    test('both are absent when omitted, so the defaults stay in the interceptor', () => {
+      const parsed = parseConfig({ mode: 'enforce' });
+      expect(parsed.maskValue).toBeUndefined();
+      expect(parsed.maskTypeSafe).toBeUndefined();
+    });
+
+    test('throws when maskValue is not a non-empty string', () => {
+      expect(() => parseConfig({ mode: 'enforce', maskValue: '' })).toThrow(
+        '"maskValue" must be a non-empty string, got string'
+      );
+      expect(() => parseConfig({ mode: 'enforce', maskValue: 42 })).toThrow(
+        '"maskValue" must be a non-empty string, got number'
+      );
+    });
+
+    test('throws when maskTypeSafe is not a boolean', () => {
+      expect(() => parseConfig({ mode: 'enforce', maskTypeSafe: 'no' })).toThrow(
+        '"maskTypeSafe" must be a boolean, got string'
+      );
+    });
+  });
+
   describe('"pseudonymGroups"', () => {
     test('accepts an allowlist and returns it', () => {
       const raw = { mode: 'enforce', pseudonymGroups: ['person-id', 'person-surname'] };

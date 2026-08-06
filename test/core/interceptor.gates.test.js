@@ -366,3 +366,93 @@ describe('nested policy depth', () => {
     expect(results[0].department.staff[0].salary).toBe(3);
   });
 });
+
+describe('mask placeholder vs field type', () => {
+  const ELEMENTS = {
+    name: { type: 'cds.String' },
+    salary: { type: 'cds.Decimal' },
+    hiredOn: { type: 'cds.Date' }
+  };
+
+  function read(policyExtras) {
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: {
+        mode: 'enforce',
+        entities: { Employees: { mask: ['name', 'salary', 'hiredOn'] } },
+        ...policyExtras
+      }
+    });
+    return {
+      srv,
+      req: { event: 'READ', entity: 'Employees', target: { name: 'Employees', elements: ELEMENTS } }
+    };
+  }
+
+  // The default assumes a typed consumer: Fiori renders a string in a Decimal column as an empty
+  // cell, which reads as "no value" rather than "withheld".
+  test('by default a non-string field is masked to null, a string one to the placeholder', async () => {
+    const { srv, req } = read();
+    const results = [{ name: 'Ada', salary: 85000, hiredOn: '2020-01-01' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].name).toBe('***MASKED***');
+    expect(results[0].salary).toBeNull();
+    expect(results[0].hiredOn).toBeNull();
+  });
+
+  // When the masked copy only ever reaches an agent reading JSON, a null is strictly less
+  // informative than the placeholder — it can't be told apart from an empty column.
+  test('maskTypeSafe: false puts the placeholder on every masked field', async () => {
+    const { srv, req } = read({ maskTypeSafe: false });
+    const results = [{ name: 'Ada', salary: 85000, hiredOn: '2020-01-01' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].name).toBe('***MASKED***');
+    expect(results[0].salary).toBe('***MASKED***');
+    expect(results[0].hiredOn).toBe('***MASKED***');
+  });
+
+  test('maskValue replaces the placeholder text', async () => {
+    const { srv, req } = read({ maskValue: '***GIZLI***' });
+    const results = [{ name: 'Ada', salary: 85000 }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].name).toBe('***GIZLI***');
+    expect(results[0].salary).toBeNull();
+  });
+
+  test('maskValue and maskTypeSafe compose', async () => {
+    const { srv, req } = read({ maskValue: '[redacted]', maskTypeSafe: false });
+    const results = [{ name: 'Ada', salary: 85000, hiredOn: '2020-01-01' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0]).toEqual({ name: '[redacted]', salary: '[redacted]', hiredOn: '[redacted]' });
+  });
+
+  test('applies to expanded rows as well, not just the top level', async () => {
+    const departments = { name: 'Departments', elements: { budget: { type: 'cds.Decimal' } } };
+    const employees = {
+      name: 'Employees',
+      elements: { ...ELEMENTS, department: { type: 'cds.Association', _target: departments } }
+    };
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: {
+        mode: 'enforce',
+        maskTypeSafe: false,
+        entities: { Employees: { mask: ['salary'] }, Departments: { mask: ['budget'] } }
+      }
+    });
+    const results = [{ salary: 1, department: { budget: 2 } }];
+
+    await srv.simulateRequest({ event: 'READ', entity: 'Employees', target: employees }, results);
+
+    expect(results[0].salary).toBe('***MASKED***');
+    expect(results[0].department.budget).toBe('***MASKED***');
+  });
+});

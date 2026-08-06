@@ -160,3 +160,32 @@ describe('formatLintReport', () => {
     expect(formatLintReport({ groups: {}, warnings: [], errors: [] })).toEqual([]);
   });
 });
+
+describe('lintPolicy — mask placeholder settings', () => {
+  const DECIMAL = { type: 'cds.Decimal' };
+
+  test('with maskTypeSafe off, warns that the field will contradict its own metadata', () => {
+    const findings = lintPolicy(
+      { maskTypeSafe: false, entities: { Employees: { mask: ['salary'] } } },
+      { Employees: { salary: DECIMAL } }
+    );
+    expect(findings.warnings).toHaveLength(1);
+    expect(findings.warnings[0]).toContain('contradicts its own $metadata');
+    expect(findings.warnings[0]).not.toContain('yields null');
+  });
+
+  test('names the configured placeholder rather than the default', () => {
+    const findings = lintPolicy(
+      { maskValue: '***GIZLI***', entities: { Employees: { mask: ['salary'] } } },
+      { Employees: { salary: DECIMAL } }
+    );
+    expect(findings.warnings[0]).toContain('***GIZLI***');
+  });
+
+  test('stays quiet on a string field whichever setting is in force', () => {
+    const elements = { Employees: { name: { type: 'cds.String' } } };
+    const policy = { entities: { Employees: { mask: ['name'] } } };
+    expect(lintPolicy(policy, elements).warnings).toEqual([]);
+    expect(lintPolicy({ ...policy, maskTypeSafe: false }, elements).warnings).toEqual([]);
+  });
+});
