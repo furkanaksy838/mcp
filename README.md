@@ -687,6 +687,29 @@ and can see neither, so once one is in place, say so and the warning stops:
 { "cap-mcp-guard": { "mode": "enforce", "paths": ["/mcp"], "otherSurfacesGated": true } }
 ```
 
+**A request the guard cannot place is masked, not passed.** `paths` scoping needs an inbound path to
+compare against, and some requests carry none — an internal call with no HTTP context, a runtime that
+queries the service without preserving the outer request. Treating that as "not matching" would
+return real values, and return them silently. So the ambiguous case leans the other way: masked data
+reaching something that wanted real data is a failure somebody *sees* and comes asking about, while
+real data reaching something that should have been masked is invisible. Between a loud wrong answer
+and a quiet one, take the loud one.
+
+If a project's internal jobs legitimately run without an HTTP context and need the real values, opt
+back out:
+
+```json
+{ "cap-mcp-guard": { "mode": "enforce", "paths": ["/mcp"], "whenPathUnknown": "pass" } }
+```
+
+**What no scoping can reach.** The guard hooks CAP's service layer, so it sees whatever goes through
+a service — which is how every MCP runtime that builds its tools from entities reaches the data. Code
+that queries the database directly (`cds.db.run`) bypasses services by construction, and no policy
+here applies to it. That is not a setting to change; it is where this layer ends. To check a runtime
+you haven't used before, log `req.http?.req?.originalUrl` from a `srv.before('*')` handler and call
+one tool: the path tells you whether `paths` can scope it, and no log line at all tells you the
+runtime is bypassing the service layer entirely.
+
 `"paths"`, `"services"` and `"users"` compose as AND — set several and a request must satisfy all of
 them for the policy to apply.
 

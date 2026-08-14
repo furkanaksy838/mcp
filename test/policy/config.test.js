@@ -601,3 +601,28 @@ describe('parseConfig — "otherSurfacesGated"', () => {
     );
   });
 });
+
+describe('parseConfig — "whenPathUnknown"', () => {
+  test('accepts both values alongside "paths"', () => {
+    expect(parseConfig({ mode: 'enforce', paths: ['/mcp'], whenPathUnknown: 'pass' }).whenPathUnknown).toBe('pass');
+    expect(parseConfig({ mode: 'enforce', paths: ['/mcp'], whenPathUnknown: 'mask' }).whenPathUnknown).toBe('mask');
+  });
+
+  test('is absent when omitted, leaving the default in the evaluator', () => {
+    expect(parseConfig({ mode: 'enforce', paths: ['/mcp'] })).not.toHaveProperty('whenPathUnknown');
+  });
+
+  test('throws on an unknown value', () => {
+    expect(() => parseConfig({ mode: 'enforce', paths: ['/mcp'], whenPathUnknown: 'reject' })).toThrow(
+      '"whenPathUnknown" must be one of mask, pass (got "reject")'
+    );
+  });
+
+  // Without "paths" every request is in scope and there is no unknown-path case, so a config setting
+  // this alone is asking for something that will never apply.
+  test('throws when set without "paths"', () => {
+    expect(() => parseConfig({ mode: 'enforce', whenPathUnknown: 'pass' })).toThrow(
+      '"whenPathUnknown" only applies with "paths" set'
+    );
+  });
+});

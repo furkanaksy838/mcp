@@ -667,8 +667,14 @@ describe('inbound path scoping', () => {
     expect(await salaryAfter('/odata/v4/catalog/Employees?$top=1')).toBe('85000');
   });
 
-  test('a request with no HTTP context at all is out of scope', async () => {
-    expect(await salaryAfter(undefined)).toBe('85000');
+  // A runtime that queries the service without preserving the outer request would otherwise get
+  // real values, silently. Leaning the ambiguous case towards masking makes that a visible failure.
+  test('a request with no HTTP context at all is masked by default', async () => {
+    expect(await salaryAfter(undefined)).toBe('***MASKED***');
+  });
+
+  test('whenPathUnknown: "pass" lets a context-less internal call through unmasked', async () => {
+    expect(await salaryAfter(undefined, { whenPathUnknown: 'pass' })).toBe('85000');
   });
 
   test('without "paths" the policy applies whatever the path', async () => {

@@ -203,9 +203,24 @@ describe('evaluate', () => {
       expect(evaluate(context, policy)).toEqual(passThroughShape('enforce', context));
     });
 
-    test('a request with no path at all is out of scope', () => {
+    // The ambiguous case leans towards masking: a loud wrong answer (masked data where a real value
+    // was wanted) gets reported by whoever sees it; a quiet one does not.
+    test('a request whose path is unknown is masked by default', () => {
+      expect(evaluate(ctx({ path: undefined }), policy).fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    test('whenPathUnknown: "pass" opts back out, for internal jobs that need real values', () => {
       const context = ctx({ path: undefined });
-      expect(evaluate(context, policy)).toEqual(passThroughShape('enforce', context));
+      const lenient = { ...policy, whenPathUnknown: 'pass' };
+      expect(evaluate(context, lenient)).toEqual(passThroughShape('enforce', context));
+    });
+
+    test('whenPathUnknown does not affect a request that does carry a path', () => {
+      const lenient = { ...policy, whenPathUnknown: 'pass' };
+      expect(evaluate(ctx({ path: '/mcp' }), lenient).fieldsToMask).toEqual(['CreditCard']);
+
+      const outOfScope = ctx({ path: '/odata/v4/catalog/Orders' });
+      expect(evaluate(outOfScope, lenient)).toEqual(passThroughShape('enforce', outOfScope));
     });
 
     test('omitting "paths" enforces the policy whatever the path, as before', () => {
