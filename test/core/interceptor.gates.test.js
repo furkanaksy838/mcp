@@ -621,3 +621,89 @@ describe('per-field mask strategies', () => {
     expect(decisions[0].fieldsToMask).toEqual(['iban']);
   });
 });
+
+/**
+ * Path scoping's read side: the guard has to see which door a request arrived at, and that has to
+ * keep working when a runtime mounted elsewhere queries the service internally rather than over
+ * HTTP — which is the whole case it exists for.
+ */
+describe('inbound path scoping', () => {
+  const ELEMENTS = { salary: { type: 'cds.String' } };
+
+  function read(path, policyExtras) {
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: { mode: 'enforce', paths: ['/mcp'], entities: { Employees: { mask: ['salary'] } }, ...policyExtras }
+    });
+    return {
+      srv,
+      req: {
+        event: 'READ',
+        entity: 'Employees',
+        target: { name: 'Employees', elements: ELEMENTS },
+        ...(path !== undefined && { http: { req: { originalUrl: path } } })
+      }
+    };
+  }
+
+  const salaryAfter = async (path, extras) => {
+    const { srv, req } = read(path, extras);
+    const results = [{ salary: '85000' }];
+    await srv.simulateRequest(req, results);
+    return results[0].salary;
+  };
+
+  test('masks a request that arrived on the scoped path', async () => {
+    expect(await salaryAfter('/mcp')).toBe('***MASKED***');
+  });
+
+  test('leaves a request that arrived on another path alone', async () => {
+    expect(await salaryAfter('/odata/v4/catalog/Employees')).toBe('85000');
+  });
+
+  // The query string is not part of the door — leaving it on would break every prefix comparison.
+  test('ignores the query string when matching', async () => {
+    expect(await salaryAfter('/mcp?sessionId=abc')).toBe('***MASKED***');
+    expect(await salaryAfter('/odata/v4/catalog/Employees?$top=1')).toBe('85000');
+  });
+
+  test('a request with no HTTP context at all is out of scope', async () => {
+    expect(await salaryAfter(undefined)).toBe('85000');
+  });
+
+  test('without "paths" the policy applies whatever the path', async () => {
+    expect(await salaryAfter('/odata/v4/catalog/Employees', { paths: undefined })).toBe('***MASKED***');
+  });
+
+  test('the gates still run for an in-scope request, and not for an out-of-scope one', async () => {
+    const inScope = read('/mcp');
+    inScope.req.query = { SELECT: { from: { ref: ['Employees'] }, where: [{ ref: ['salary'] }, '>', { val: 1 }] } };
+    inScope.req.reject = (code, reason) => {
+      throw new Error(`${code}: ${reason}`);
+    };
+    await expect(inScope.srv.simulateRequest(inScope.req, [])).rejects.toThrow(/403: query computes over/);
+
+    const outOfScope = read('/odata/v4/catalog/Employees');
+    outOfScope.req.query = { SELECT: { from: { ref: ['Employees'] }, where: [{ ref: ['salary'] }, '>', { val: 1 }] } };
+    await expect(outOfScope.srv.simulateRequest(outOfScope.req, [])).resolves.toBeUndefined();
+  });
+
+  test('falls back through originalUrl -> path -> url', async () => {
+    const bySource = async (httpReq) => {
+      const srv = createFakeService();
+      attachInterceptor(srv, {
+        policyDefinition: { mode: 'enforce', paths: ['/mcp'], entities: { Employees: { mask: ['salary'] } } }
+      });
+      const results = [{ salary: '85000' }];
+      await srv.simulateRequest(
+        { event: 'READ', entity: 'Employees', target: { name: 'Employees', elements: ELEMENTS }, http: { req: httpReq } },
+        results
+      );
+      return results[0].salary;
+    };
+
+    expect(await bySource({ path: '/mcp' })).toBe('***MASKED***');
+    expect(await bySource({ url: '/mcp' })).toBe('***MASKED***');
+    expect(await bySource({ originalUrl: '/mcp', path: '/odata' })).toBe('***MASKED***');
+  });
+});

@@ -641,6 +641,55 @@ that one, and leave your UI's service out of the list entirely — it keeps seei
 unmasked data. Omitting `"services"` keeps the default: every served service is guarded, as
 before.
 
+### Scoping the guard to the agent's own URL
+
+The strongest discriminator available without touching the model is neither the caller's name nor a
+second projection: it is **which door the request arrived at**. A runtime serving an agent — an MCP
+endpoint, say — reaches the same CAP service the UI does, but through its own URL, and unlike an
+identity, a path is not something the caller asserts about itself.
+
+```json
+{ "cap-mcp-guard": { "mode": "enforce", "paths": ["/mcp"], "maskTypeSafe": false } }
+```
+
+Prefix match, root-anchored. The policy applies to requests whose inbound HTTP path starts with one
+of these and to no others. It keeps working when the runtime queries the service internally rather
+than over HTTP — the guard reads the path of the *outermost* request, so a tool call handled at
+`/mcp` that then selects from the same entity the UI reads still reports `/mcp`.
+
+Every gate still runs for an in-scope request: a `$filter`/`$orderby`/`$apply` over a protected field
+is still refused, `$expand` is still masked at every level, writes to protected fields are still
+rejected. Path scoping decides *whether* the policy applies, not how much of it.
+
+**On its own this is worse than nothing, and the guard says so at startup.** Scoping the policy to
+`/mcp` says nothing about the service's own URL, where the same rows are still served — now with no
+policy applying at all. The agent asks `/odata/v4/...` instead and gets real values:
+
+```text
+[cap-mcp-guard] warning: policy is scoped to path "/mcp", but CatalogService.Employees carries no
+  @requires/@restrict naming a real role — the same rows are readable unmasked through the service's
+  own URL by anyone who can reach it, because the policy does not apply there.
+```
+
+Closing the other doors is authorization, not masking, so it belongs to CAP's own `@requires` /
+`@restrict` — on a **real role**, not `authenticated-user`, which an agent that authenticated
+perfectly well already satisfies. The two halves are one design: masking decides what happens at the
+door you point it at, authorization decides who reaches the others. Neither is any use alone.
+
+One wrinkle worth knowing: `@requires` is declared on a service or an entity and knows nothing about
+paths, so it cannot say "this role for OData but not for /mcp" — and put on the service it locks out
+the agent-serving runtime too, which queries that same service. Where the split has to be per-path
+it goes in front of CAP: an ingress rule, or a middleware registered after CAP's own `auth` (before
+it, `req.user` isn't populated yet and every role check fails open). The guard reads the model only
+and can see neither, so once one is in place, say so and the warning stops:
+
+```json
+{ "cap-mcp-guard": { "mode": "enforce", "paths": ["/mcp"], "otherSurfacesGated": true } }
+```
+
+`"paths"`, `"services"` and `"users"` compose as AND — set several and a request must satisfy all of
+them for the policy to apply.
+
 ### Scoping the guard to specific users
 
 If splitting into a second CDS service isn't worth it, scope the guard by **identity**

@@ -1,6 +1,6 @@
 'use strict';
 
-const { lintPolicy, lintIdentityScoping, formatLintReport } = require('../../lib/policy/lint');
+const { lintPolicy, lintIdentityScoping, lintPathScoping, formatLintReport } = require('../../lib/policy/lint');
 
 const STRING = { type: 'cds.String' };
 const UUID = { type: 'cds.UUID' };
@@ -300,5 +300,78 @@ describe('lintIdentityScoping', () => {
 
   test('says nothing when the auth strategy is unknown to it', () => {
     expect(lintIdentityScoping(withUsers, undefined)).toBeUndefined();
+  });
+});
+
+describe('lintPathScoping', () => {
+  const policy = { paths: ['/mcp'], entities: { 'CatalogService.Employees': { mask: ['salary'] } } };
+  const OPEN = { 'CatalogService.Employees': { service: false, entity: false } };
+
+  // The trap: path scoping masks the door it names and says nothing about the next one. The same
+  // rows come back real at /odata/v4/..., with a 200, which is indistinguishable from an entity
+  // nobody meant to mask.
+  test('warns when a path-scoped entity carries no authorization at all', () => {
+    const warning = lintPathScoping(policy, OPEN);
+
+    expect(warning).toBeDefined();
+    expect(warning).toContain('"/mcp"');
+    expect(warning).toContain('CatalogService.Employees');
+    expect(warning).toContain('@requires/@restrict');
+  });
+
+  test('stays quiet when the service carries authorization', () => {
+    expect(lintPathScoping(policy, { 'CatalogService.Employees': { service: true, entity: false } })).toBeUndefined();
+  });
+
+  test('stays quiet when the entity itself carries authorization', () => {
+    expect(lintPathScoping(policy, { 'CatalogService.Employees': { service: false, entity: true } })).toBeUndefined();
+  });
+
+  test('stays quiet when the policy is not path-scoped', () => {
+    expect(lintPathScoping({ entities: policy.entities }, OPEN)).toBeUndefined();
+    expect(lintPathScoping({ paths: [], entities: policy.entities }, OPEN)).toBeUndefined();
+  });
+
+  test('says nothing about an entity it has no authorization info for', () => {
+    expect(lintPathScoping(policy, {})).toBeUndefined();
+  });
+
+  test('names every unprotected entity, sorted, and agrees with itself grammatically', () => {
+    const many = {
+      paths: ['/mcp'],
+      entities: { 'S.Employees': {}, 'S.Departments': {} }
+    };
+    const warning = lintPathScoping(many, {
+      'S.Employees': { service: false, entity: false },
+      'S.Departments': { service: false, entity: false }
+    });
+
+    expect(warning).toContain('S.Departments, S.Employees');
+    expect(warning).toContain('carry no');
+  });
+
+  test('uses the singular for one entity', () => {
+    expect(lintPathScoping(policy, OPEN)).toContain('carries no');
+  });
+});
+
+describe('lintPathScoping — acknowledging a gate the model cannot show', () => {
+  const policy = { paths: ['/mcp'], entities: { 'S.Employees': { mask: ['salary'] } } };
+  const OPEN = { 'S.Employees': { service: false, entity: false } };
+
+  // The check reads the model; an ingress rule or an express middleware is just as real a lock and
+  // is invisible to it. Without a way to say so, this would fire at a correct project and — under
+  // lint.strict — refuse to start it.
+  test('otherSurfacesGated silences it', () => {
+    expect(lintPathScoping(policy, OPEN)).toBeDefined();
+    expect(lintPathScoping({ ...policy, otherSurfacesGated: true }, OPEN)).toBeUndefined();
+  });
+
+  test('otherSurfacesGated: false is not an acknowledgement', () => {
+    expect(lintPathScoping({ ...policy, otherSurfacesGated: false }, OPEN)).toBeDefined();
+  });
+
+  test('the warning says how to acknowledge it', () => {
+    expect(lintPathScoping(policy, OPEN)).toContain('"otherSurfacesGated": true');
   });
 });

@@ -176,6 +176,77 @@ describe('evaluate', () => {
     });
   });
 
+  describe('paths allowlist', () => {
+    const entities = { Orders: { mask: ['CreditCard'], allowTools: ['ReadOrders'], maxRows: 1 } };
+    const policy = { mode: 'enforce', entities, paths: ['/mcp'] };
+
+    // The point of scoping by path rather than by identity: this does not rest on a claim the
+    // caller makes about itself. A request either arrived at that door or it did not.
+    test('a request on a scoped path gets the policy applied', () => {
+      expect(evaluate(ctx({ path: '/mcp' }), policy).fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    test('prefix match, so whatever the runtime appends still counts', () => {
+      for (const path of ['/mcp/', '/mcp/messages', '/mcp/v1/tools']) {
+        expect(evaluate(ctx({ path }), policy).fieldsToMask).toEqual(['CreditCard']);
+      }
+    });
+
+    test('a request on another path is fully passed through', () => {
+      const context = ctx({ path: '/odata/v4/catalog/Orders', operation: 'DeleteOrder', rowCount: 999 });
+      expect(evaluate(context, policy)).toEqual(passThroughShape('enforce', context));
+    });
+
+    // A path that merely *contains* the prefix is a different door.
+    test('a path that only contains the prefix later on does not match', () => {
+      const context = ctx({ path: '/odata/v4/mcp-things/Orders' });
+      expect(evaluate(context, policy)).toEqual(passThroughShape('enforce', context));
+    });
+
+    test('a request with no path at all is out of scope', () => {
+      const context = ctx({ path: undefined });
+      expect(evaluate(context, policy)).toEqual(passThroughShape('enforce', context));
+    });
+
+    test('omitting "paths" enforces the policy whatever the path, as before', () => {
+      expect(evaluate(ctx({ path: '/odata/v4/catalog/Orders' }), { mode: 'enforce', entities }).fieldsToMask).toEqual([
+        'CreditCard'
+      ]);
+    });
+
+    test('several paths can be scoped at once', () => {
+      const two = { ...policy, paths: ['/mcp', '/agent-api'] };
+      expect(evaluate(ctx({ path: '/agent-api/tools' }), two).fieldsToMask).toEqual(['CreditCard']);
+      expect(evaluate(ctx({ path: '/mcp' }), two).fieldsToMask).toEqual(['CreditCard']);
+    });
+
+    // Both gates, so the combination is an AND: the request must arrive at the right door AND
+    // carry an identity in the list.
+    test('"paths" and "users" compose', () => {
+      const both = { ...policy, users: ['mcp-agent'] };
+
+      expect(evaluate(ctx({ path: '/mcp', user: 'mcp-agent' }), both).fieldsToMask).toEqual(['CreditCard']);
+
+      const wrongUser = ctx({ path: '/mcp', user: 'ali' });
+      expect(evaluate(wrongUser, both)).toEqual(passThroughShape('enforce', wrongUser));
+
+      const wrongPath = ctx({ path: '/odata/v4/catalog/Orders', user: 'mcp-agent' });
+      expect(evaluate(wrongPath, both)).toEqual(passThroughShape('enforce', wrongPath));
+    });
+
+    // Path scoping only decides whether the policy applies; once it does, every gate still runs.
+    test('the query gate still fires for an in-scope request', () => {
+      const decision = evaluate(ctx({ path: '/mcp', queryFields: ['CreditCard'] }), {
+        mode: 'enforce',
+        paths: ['/mcp'],
+        entities: { Orders: { mask: ['CreditCard'] } }
+      });
+
+      expect(decision.allowed).toBe(false);
+      expect(decision.reason).toContain('computes over protected field');
+    });
+  });
+
   describe('fieldsToPseudonymize', () => {
     test('pseudonymize defined -> fieldsToPseudonymize is that array', () => {
       const decision = evaluate(

@@ -183,6 +183,34 @@ describe('parseConfig', () => {
     });
   });
 
+  describe('"paths"', () => {
+    test('accepts an array of root-anchored prefixes and returns it', () => {
+      expect(parseConfig({ mode: 'enforce', paths: ['/mcp', '/agent-api'] }).paths).toEqual(['/mcp', '/agent-api']);
+    });
+
+    test('is absent from the PolicyDefinition when omitted, so the policy applies on every path', () => {
+      expect(parseConfig({ mode: 'enforce' })).not.toHaveProperty('paths');
+    });
+
+    test('throws when it is not an array', () => {
+      expect(() => parseConfig({ mode: 'enforce', paths: '/mcp' })).toThrow('"paths" must be an array, got string');
+    });
+
+    // A bare "mcp" prefix-matches nothing, which would silently scope the policy to no request at
+    // all — the one mistake here that looks exactly like a working config.
+    test('throws on an entry that is not root-anchored', () => {
+      expect(() => parseConfig({ mode: 'enforce', paths: ['mcp'] })).toThrow(
+        '"paths" entries must be strings starting with "/" (got "mcp")'
+      );
+      expect(() => parseConfig({ mode: 'enforce', paths: [42] })).toThrow('got 42');
+      expect(() => parseConfig({ mode: 'enforce', paths: [null] })).toThrow('got null');
+    });
+
+    test('an empty array is accepted and scopes the policy to nothing', () => {
+      expect(parseConfig({ mode: 'enforce', paths: [] }).paths).toEqual([]);
+    });
+  });
+
   describe('per-field mask strategies', () => {
     const parseMask = (mask) => parseConfig({ mode: 'enforce', entities: { Employees: { mask } } }).entities.Employees;
 
@@ -555,5 +583,21 @@ describe('loadConfig', () => {
     fs.writeFileSync(filePath, '{ invalid json');
 
     expect(() => loadConfig(filePath)).toThrow(new RegExp(`^Failed to parse ${filePath.replace(/\\/g, '\\\\')}: `));
+  });
+});
+
+describe('parseConfig — "otherSurfacesGated"', () => {
+  test('accepts a boolean and carries it through', () => {
+    expect(parseConfig({ mode: 'enforce', otherSurfacesGated: true }).otherSurfacesGated).toBe(true);
+  });
+
+  test('is absent when omitted', () => {
+    expect(parseConfig({ mode: 'enforce' })).not.toHaveProperty('otherSurfacesGated');
+  });
+
+  test('throws when it is not a boolean', () => {
+    expect(() => parseConfig({ mode: 'enforce', otherSurfacesGated: 'yes' })).toThrow(
+      '"otherSurfacesGated" must be a boolean, got string'
+    );
   });
 });

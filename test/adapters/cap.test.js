@@ -730,5 +730,101 @@ describe('registerCapMcpGuard', () => {
       expect(() => boot('mocked', usersPolicy, { lint: true })).not.toThrow();
       expect(warnSpy).toHaveBeenCalled();
     });
+
+    // Path scoping's other half: it masks the door it names and says nothing about the next one.
+    // Whether the next one is locked is declared in the model, so this is checkable.
+    describe('path scoping vs authorization on the model', () => {
+      const pathPolicy = { mode: 'enforce', paths: ['/mcp'], entities: { Employees: { mask: ['salary'] } } };
+
+      /** A served service whose entities the adapter can scan for @requires/@restrict. */
+      const serviceWith = (serviceAnnotations, entityAnnotations) => {
+        const srv = createFakeService({ Employees: { name: 'Employees', elements: {}, ...entityAnnotations } });
+        srv.definition = { ...serviceAnnotations };
+        return srv;
+      };
+
+      const bootWith = (srv, extra = {}) => {
+        const cds = withAuth(createFakeCds(tmpDir, { CatalogService: srv }), 'xsuaa');
+        registerCapMcpGuard(cds, { policyDefinition: pathPolicy, ...extra });
+        cds.fireServed();
+        return warnSpy.mock.calls.map((c) => String(c[0]));
+      };
+
+      test('warns when neither the service nor the entity is protected', () => {
+        const warnings = bootWith(serviceWith({}, {}));
+
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain('"/mcp"');
+        expect(warnings[0]).toContain('Employees');
+        expect(warnings[0]).toContain('@requires/@restrict');
+      });
+
+      test('stays quiet when the service requires a real role', () => {
+        expect(bootWith(serviceWith({ '@requires': 'HR_FULL' }, {}))).toEqual([]);
+        expect(bootWith(serviceWith({ '@requires': ['HR_FULL', 'HR_READ'] }, {}))).toEqual([]);
+      });
+
+      test('stays quiet when the entity declares @restrict against a real role', () => {
+        expect(bootWith(serviceWith({}, { '@restrict': [{ grant: 'READ', to: 'HR_FULL' }] }))).toEqual([]);
+        expect(bootWith(serviceWith({}, { '@restrict': [{ grant: '*', to: 'HR_FULL' }] }))).toEqual([]);
+      });
+
+      // The trap this check would otherwise walk into: `@requires: 'authenticated-user'` is the
+      // most-written authorization annotation there is, and an agent that authenticated perfectly
+      // well satisfies it. Its presence is not a closed door.
+      test('still warns when authorization is only a pseudo-role every caller satisfies', () => {
+        for (const requires of ['authenticated-user', 'any', ['any']]) {
+          warnSpy.mockClear();
+          const warnings = bootWith(serviceWith({ '@requires': requires }, {}));
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toContain('@requires/@restrict');
+        }
+      });
+
+      test('still warns when @restrict grants reading to any authenticated caller', () => {
+        const warnings = bootWith(
+          serviceWith({}, { '@restrict': [{ grant: 'READ', to: 'authenticated-user' }] })
+        );
+        expect(warnings).toHaveLength(1);
+      });
+
+      // A @restrict that grants WRITE to a role but never mentions READ leaves reading granted to
+      // nobody, which is narrower than a role check rather than looser.
+      test('stays quiet when @restrict does not grant reading at all', () => {
+        expect(bootWith(serviceWith({}, { '@restrict': [{ grant: 'UPDATE', to: 'HR_FULL' }] }))).toEqual([]);
+      });
+
+      test('a real role on the entity counts even when the service is open to any caller', () => {
+        expect(
+          bootWith(serviceWith({ '@requires': 'authenticated-user' }, { '@requires': 'HR_FULL' }))
+        ).toEqual([]);
+      });
+
+      test('stays quiet when the policy is not path-scoped', () => {
+        const cds = withAuth(createFakeCds(tmpDir, { CatalogService: serviceWith({}, {}) }), 'xsuaa');
+        registerCapMcpGuard(cds, { policyDefinition: { mode: 'enforce', entities: pathPolicy.entities } });
+        cds.fireServed();
+
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      test('lint.strict refuses to start', () => {
+        expect(() => bootWith(serviceWith({}, {}), { lint: { strict: true } })).toThrow(
+          /refusing to start with lint\.strict set/
+        );
+      });
+
+      // Both halves missing at once: identity scoping on mocked auth AND an unlocked door.
+      test('reports both scoping risks together when both apply', () => {
+        const srv = serviceWith({}, {});
+        const cds = withAuth(createFakeCds(tmpDir, { CatalogService: srv }), 'mocked');
+        registerCapMcpGuard(cds, {
+          policyDefinition: { ...pathPolicy, users: ['mcp-agent'] }
+        });
+        cds.fireServed();
+
+        expect(warnSpy.mock.calls).toHaveLength(2);
+      });
+    });
   });
 });
