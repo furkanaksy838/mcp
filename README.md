@@ -100,7 +100,7 @@ entity Employees {
 entity Orders as projection on my.Orders;
 ```
 
-- `@mcp.policy.mask` on a field — replaced with `'***MASKED***'` in agent-facing responses.
+- `@mcp.policy.mask` on a field — replaced with `'***MASKED***'` in agent-facing responses. Add an object to keep part of the value visible instead: `@mcp.policy.mask: {type: 'partial', keepLeft: 4, keepRight: 4}` (see [Partial masking](#partial-masking-keeping-part-of-the-value-visible)).
 - `@mcp.policy.pseudonymize: 'iban'` — replaced with a fake but deterministic value; the string names the generator (`'opaque'` or `'iban'`, see [Masking vs. pseudonymizing](#masking-vs-pseudonymizing)) and is **required here**. Use an object for `custom`: `@mcp.policy.pseudonymize: {type: 'custom', value: 'hidden@example.com'}`.
 - `@mcp.policy.maxRows` / `@mcp.policy.allowTools` — entity-level.
 
@@ -162,6 +162,7 @@ than a property of the data:
 Annotation-derived and package.json-derived config for the same entity are merged, per entity:
 
 - `mask` — union of both sides' fields.
+- mask strategies (`partial` / `email`) — union by field; the package.json rule wins, so a deployment can change *how* a field is masked without editing the model.
 - `pseudonymize` — union by field; the package.json entry wins if the same field is configured on both sides.
 - `maxRows` / `allowTools` — the package.json value wins when both are present.
 - A field listed under `mask` from one source and `pseudonymize` from the other fails loudly at startup, exactly like configuring both in the same package.json entity.
@@ -210,6 +211,79 @@ something reading JSON. Turn it off (see
 ```json
 { "cap-mcp-guard": { "mode": "enforce", "users": ["mcp-agent"], "maskTypeSafe": false } }
 ```
+
+### Partial masking: keeping part of the value visible
+
+A full mask replaces the whole value. Sometimes that's more than you need — a human reading the
+agent's answer recognises their own account from the last four digits, and a support workflow that
+can't show *anything* stops being useful. Name a strategy on the mask instead of taking the default:
+
+```cds
+entity Employees {
+  key ID     : Integer;
+      salary : Decimal(10, 2) @mcp.policy.mask;                                          // ***MASKED***
+      iban   : String @mcp.policy.mask: {type: 'partial', keepLeft: 4, keepRight: 4};   // TR33******************1326
+      email  : String @mcp.policy.mask: {type: 'email'};                                // a****@firma.com
+      phone  : String @mcp.policy.mask: {type: 'partial', keepRight: 4, char: '#'};      // #######4567
+}
+```
+
+The same in package.json, where a mask entry is either a bare field name (full mask, as before) or
+an object naming the strategy:
+
+```json
+{
+  "cap-mcp-guard": {
+    "entities": {
+      "AgentCatalogService.Employees": {
+        "mask": [
+          "salary",
+          { "field": "iban", "type": "partial", "keepLeft": 4, "keepRight": 4 },
+          { "field": "email", "type": "email" }
+        ]
+      }
+    }
+  }
+}
+```
+
+| `type` | Keeps | Options |
+| --- | --- | --- |
+| `full` (default) | nothing — the placeholder replaces the value | — |
+| `partial` | `keepLeft` characters from the start, `keepRight` from the end | `keepLeft`, `keepRight`, `char` |
+| `email` | the first character of the local part, and the whole domain | `char` |
+
+`char` is the character drawn in place of the hidden ones (`'*'` by default) — a single character,
+and only meaningful for the two strategies that draw with it. To change the *full*-mask placeholder,
+use the top-level `"maskValue"` instead.
+
+**`partial` discloses real characters. That is the trade, not a side effect.** `TR33...1326` hands
+the agent eight real characters of the IBAN, and an agent that can read many rows can use them to
+tell rows apart, group them, and match them against anything else it knows. Use it where partial
+recognition is worth more than concealment; for a field that's simply secret, mask it fully, and if
+what you actually want is *distinguishable but fake*, that's
+[`pseudonymize`](#masking-vs-pseudonymizing).
+
+Two safety behaviours worth knowing, both of which fall back to the *full* replacement rather than
+to something readable:
+
+- A value no longer than `keepLeft + keepRight` is starred out entirely, so a short value can never come back fully visible just because the bounds happened to cover it.
+- A value the strategy can't process — a `null`, or an `email` rule on something with no `@` — becomes the placeholder. A malformed value is exactly when you least want to publish a prefix of it.
+
+Both strategies produce a **string**, so they only apply to string fields. On a `Decimal` or a
+`Date` the rule can't apply at all and the type-safe full mask stands in — with `"lint": true` set,
+that mismatch is reported at startup rather than discovered in a payload:
+
+```text
+error: AgentEmployees.salary: mask type "partial" produces a string, but the field is cds.Decimal,
+       so the rule cannot apply. Mask it fully, or model the field as text on the agent-facing projection.
+```
+
+If you're coming from a table-driven masking config (an ABAP `*_MASK_CFG` table, say), the mapping
+is direct: `TABNAME`/`FIELDNAME` become the entity key and the `field`, `MASK_TYPE` becomes `type`,
+and `KEEP_LEFT`/`KEEP_RIGHT`/`MASK_CHAR` keep their names in camelCase. The difference is *where* it
+lives — a rule row is data you can change without a deploy, an annotation is a rule that travels
+with the field it protects and can't drift away from it.
 
 ### Masking vs. pseudonymizing
 
@@ -648,6 +722,10 @@ but on a wide table it is a real one.
 
 **Row count is bounded, not the work.** `maxRows` caps rows. It doesn't cap columns, joins, or the
 cost of a `$filter` over an unprotected but unindexed field.
+
+**`partial` discloses part of the value, by design.** `keepLeft`/`keepRight` publish real
+characters — that's what makes the value recognisable and it is also what an agent can accumulate
+across rows. The kept characters are chosen by you, not bounded by the guard.
 
 **Uniqueness leaks through pseudonyms, by design.** Two rows sharing a real value share a
 pseudonym; that is the whole point, and it means an agent can count distinct values and spot

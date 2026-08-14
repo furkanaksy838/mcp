@@ -22,3 +22,11 @@ service AgentService @(path: 'agent') {
 // projection keeps the rule attached to exactly what the agent reads.
 annotate AgentService.Books   with { price        @mcp.policy.mask };
 annotate AgentService.Authors with { placeOfDeath @mcp.policy.mask };
+
+// A strategy instead of the default full mask: hide the town, keep the region. The agent can still
+// group authors by where they came from without being told the exact place. Note what this trades —
+// the kept characters are *real*, so `partial` is for fields where recognition is worth more than
+// concealment, not for fields that are simply secret.
+annotate AgentService.Authors with {
+  placeOfBirth @mcp.policy.mask: { type: 'partial', keepRight: 9 }
+};

@@ -183,6 +183,122 @@ describe('parseConfig', () => {
     });
   });
 
+  describe('per-field mask strategies', () => {
+    const parseMask = (mask) => parseConfig({ mode: 'enforce', entities: { Employees: { mask } } }).entities.Employees;
+
+    // The split is the point: `mask` stays the plain name list the audit log and the OTel span
+    // already publish, and the strategy travels beside it.
+    test('splits an entry object into a masked field name plus a rule', () => {
+      const config = parseMask([{ field: 'iban', type: 'partial', keepLeft: 4, keepRight: 4, char: '*' }]);
+
+      expect(config.mask).toEqual(['iban']);
+      expect(config.maskRules).toEqual({ iban: { type: 'partial', keepLeft: 4, keepRight: 4, char: '*' } });
+    });
+
+    test('bare field names still produce no rules at all, so nothing changes for an existing config', () => {
+      const config = parseMask(['salary', 'iban']);
+
+      expect(config.mask).toEqual(['salary', 'iban']);
+      expect(config).not.toHaveProperty('maskRules');
+    });
+
+    test('mixes bare names and strategies in one array', () => {
+      const config = parseMask(['salary', { field: 'email', type: 'email' }]);
+
+      expect(config.mask).toEqual(['salary', 'email']);
+      expect(config.maskRules).toEqual({ email: { type: 'email' } });
+    });
+
+    test('an explicit type "full" is a masked field with no rule, the same as the bare name', () => {
+      const config = parseMask([{ field: 'salary', type: 'full' }]);
+
+      expect(config.mask).toEqual(['salary']);
+      expect(config).not.toHaveProperty('maskRules');
+    });
+
+    test('an entry object without a type defaults to "full"', () => {
+      expect(parseMask([{ field: 'salary' }])).toMatchObject({ mask: ['salary'] });
+    });
+
+    test('a strategy field still collides with pseudonymize', () => {
+      const raw = {
+        mode: 'enforce',
+        entities: { Employees: { mask: [{ field: 'iban', type: 'partial' }], pseudonymize: ['iban'] } }
+      };
+      expect(() => parseConfig(raw)).toThrow(
+        'entities.Employees: "iban" cannot be listed in both "mask" and "pseudonymize"'
+      );
+    });
+
+    test('throws on an unknown mask type', () => {
+      expect(() => parseMask([{ field: 'tckn', type: 'tckn' }])).toThrow(
+        'entities.Employees.mask.tckn.type must be one of full, partial, email (got "tckn")'
+      );
+    });
+
+    test('throws on an entry that is neither a string nor an object', () => {
+      expect(() => parseMask([42])).toThrow(
+        'entities.Employees.mask entries must be a string or a {field, type} object, got number'
+      );
+      expect(() => parseMask([null])).toThrow('got null');
+    });
+
+    test('throws on an entry object with no usable field name', () => {
+      expect(() => parseMask([{ type: 'partial' }])).toThrow(
+        'entities.Employees.mask entries must have a "field" string'
+      );
+      expect(() => parseMask([''])).toThrow('entities.Employees.mask entries must be non-empty strings');
+    });
+
+    // Rejected rather than ignored: a config asking for something it will not get should say so at
+    // load time, not leave someone reading a fully-masked payload wondering why keepLeft did nothing.
+    test('throws when keepLeft/keepRight are used with a type that has no bounds', () => {
+      expect(() => parseMask([{ field: 'email', type: 'email', keepLeft: 2 }])).toThrow(
+        'entities.Employees.mask.email: "keepLeft" is only allowed with type "partial"'
+      );
+      expect(() => parseMask([{ field: 'salary', keepRight: 2 }])).toThrow(
+        'entities.Employees.mask.salary: "keepRight" is only allowed with type "partial"'
+      );
+    });
+
+    test('throws when a bound is not a non-negative integer', () => {
+      expect(() => parseMask([{ field: 'iban', type: 'partial', keepLeft: -1 }])).toThrow(
+        'entities.Employees.mask.iban.keepLeft must be a non-negative integer, got -1'
+      );
+      expect(() => parseMask([{ field: 'iban', type: 'partial', keepRight: 1.5 }])).toThrow(
+        'entities.Employees.mask.iban.keepRight must be a non-negative integer, got 1.5'
+      );
+      expect(() => parseMask([{ field: 'iban', type: 'partial', keepLeft: '4' }])).toThrow(
+        'must be a non-negative integer, got "4"'
+      );
+    });
+
+    test('keepLeft/keepRight of 0 are accepted — they mean "keep nothing at this end"', () => {
+      expect(parseMask([{ field: 'iban', type: 'partial', keepLeft: 0, keepRight: 4 }]).maskRules).toEqual({
+        iban: { type: 'partial', keepLeft: 0, keepRight: 4 }
+      });
+    });
+
+    test('throws when "char" is used on a full mask, and points at the setting that does apply', () => {
+      expect(() => parseMask([{ field: 'salary', char: '#' }])).toThrow(
+        'entities.Employees.mask.salary: "char" is only allowed with type "partial" or "email"'
+      );
+      expect(() => parseMask([{ field: 'salary', char: '#' }])).toThrow('use "maskValue"');
+    });
+
+    test('throws when "char" is not a single character', () => {
+      expect(() => parseMask([{ field: 'iban', type: 'partial', char: '**' }])).toThrow(
+        'entities.Employees.mask.iban.char must be a single character, got "**"'
+      );
+      expect(() => parseMask([{ field: 'iban', type: 'partial', char: '' }])).toThrow('got ""');
+    });
+
+    // Counted by code point, so an emoji is one character rather than two UTF-16 units.
+    test('accepts a multi-byte character as "char"', () => {
+      expect(parseMask([{ field: 'iban', type: 'partial', char: '█' }]).maskRules.iban.char).toBe('█');
+    });
+  });
+
   describe('"pseudonymGroups"', () => {
     test('accepts an allowlist and returns it', () => {
       const raw = { mode: 'enforce', pseudonymGroups: ['person-id', 'person-surname'] };

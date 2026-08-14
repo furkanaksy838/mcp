@@ -46,6 +46,35 @@ describe('cap-mcp-guard — @mcp.policy on the agent-facing projections only', (
         expect(book.stock).to.be.a('number');
       }
     });
+
+    // A mask *strategy* rather than the default placeholder, read out of the object form of the
+    // annotation — which CDS compiles to flattened dotted keys, so this is also the end-to-end
+    // proof that `@mcp.policy.mask: {...}` is picked up at all.
+    it('applies a partial mask, keeping the characters the annotation asked to keep', async () => {
+      const { data } = await GET('/odata/v4/agent/Authors');
+
+      const known = data.value.filter((author) => author.placeOfBirth !== null);
+      expect(known.length).to.be.greaterThan(0);
+      for (const author of known) {
+        // keepRight: 9 — the region survives, the town is starred out, and the length is unchanged
+        expect(author.placeOfBirth).to.match(/^\*+.{9}$/);
+        expect(author.placeOfBirth).to.not.equal('***MASKED***');
+      }
+
+      const brontë = data.value.find((author) => author.name === 'Emily Brontë');
+      expect(brontë.placeOfBirth).to.equal('**********Yorkshire');
+    });
+
+    // The counterpart: AdminService projects the same Authors and carries no annotation, so it
+    // still reads the real place. Masked for the agent, real for the human — one db entity.
+    it('leaves the same field on the human-facing service untouched', async () => {
+      // AdminService declares its own protocol path (`@odata: '/admin'`), so it is not under
+      // /odata/v4 like the others.
+      const { data } = await GET('/admin/Authors');
+
+      const brontë = data.value.find((author) => author.name === 'Emily Brontë');
+      expect(brontë.placeOfBirth).to.equal('Thornton, Yorkshire');
+    });
   });
 
   describe('approach 2: a separate entity inside the UI\'s own service (CatalogService.AgentBooks)', () => {

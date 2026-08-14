@@ -456,3 +456,168 @@ describe('mask placeholder vs field type', () => {
     expect(results[0].department.budget).toBe('***MASKED***');
   });
 });
+
+/**
+ * The strategies that derive their output from the real value, so the replacement can only be
+ * computed per row rather than once per field — the plugin's answer to a rule table row reading
+ * "IBAN, partial, keepLeft 4, keepRight 4".
+ */
+describe('per-field mask strategies', () => {
+  const ELEMENTS = {
+    iban: { type: 'cds.String' },
+    email: { type: 'cds.String' },
+    salary: { type: 'cds.Decimal' }
+  };
+
+  function read(entityConfig, policyExtras) {
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: { mode: 'enforce', entities: { Employees: entityConfig }, ...policyExtras }
+    });
+    return {
+      srv,
+      req: { event: 'READ', entity: 'Employees', target: { name: 'Employees', elements: ELEMENTS } }
+    };
+  }
+
+  test('applies a partial rule per row, so each value keeps its own length', async () => {
+    const { srv, req } = read({
+      mask: ['iban'],
+      maskRules: { iban: { type: 'partial', keepLeft: 4, keepRight: 4 } }
+    });
+    const results = [{ iban: 'TR330006100519786457841326' }, { iban: 'DE89370400440532013000' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].iban).toBe('TR33******************1326');
+    expect(results[1].iban).toBe('DE89**************3000');
+  });
+
+  test('applies an email rule', async () => {
+    const { srv, req } = read({ mask: ['email'], maskRules: { email: { type: 'email' } } });
+    const results = [{ email: 'ahmet@firma.com' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].email).toBe('a****@firma.com');
+  });
+
+  test('a field with no rule is still masked to the placeholder, in the same response', async () => {
+    const { srv, req } = read({
+      mask: ['iban', 'email'],
+      maskRules: { iban: { type: 'partial', keepLeft: 4, keepRight: 4 } }
+    });
+    const results = [{ iban: 'TR330006100519786457841326', email: 'ahmet@firma.com' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].iban).toBe('TR33******************1326');
+    expect(results[0].email).toBe('***MASKED***');
+  });
+
+  // A value the rule can't process must not come back readable — it falls through to whatever the
+  // full mask would have been for that field.
+  test('a value the rule cannot process falls back to the full replacement', async () => {
+    const { srv, req } = read({ mask: ['email'], maskRules: { email: { type: 'email' } } });
+    const results = [{ email: 'not-an-email' }, { email: null }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].email).toBe('***MASKED***');
+    expect(results[1].email).toBe('***MASKED***');
+  });
+
+  test('the fallback honours maskValue', async () => {
+    const { srv, req } = read({ mask: ['email'], maskRules: { email: { type: 'email' } } }, { maskValue: '***GIZLI***' });
+    const results = [{ email: 'bozuk-adres' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].email).toBe('***GIZLI***');
+  });
+
+  // The rule produces a string and a Decimal property can't hold one, so the full replacement
+  // stands in. lint.js reports the mismatch at startup — this is what happens if it's ignored.
+  test('a rule on a non-string field falls back to the type-safe full mask', async () => {
+    const { srv, req } = read({
+      mask: ['salary'],
+      maskRules: { salary: { type: 'partial', keepLeft: 2, keepRight: 2 } }
+    });
+    const results = [{ salary: 85000 }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].salary).toBeNull();
+  });
+
+  // With type-safety off the response already contradicts its own $metadata by design, so a
+  // partially-masked number is no worse than a placeholder string there.
+  test('with maskTypeSafe off, the rule does run on a non-string field', async () => {
+    const { srv, req } = read(
+      { mask: ['salary'], maskRules: { salary: { type: 'partial', keepLeft: 2, keepRight: 2 } } },
+      { maskTypeSafe: false }
+    );
+    const results = [{ salary: 85000 }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].salary).toBe('85*00');
+  });
+
+  test('observe mode leaves the real value alone', async () => {
+    const { srv, req } = read(
+      { mask: ['iban'], maskRules: { iban: { type: 'partial', keepLeft: 4, keepRight: 4 } } },
+      { mode: 'observe' }
+    );
+    const results = [{ iban: 'TR330006100519786457841326' }];
+
+    await srv.simulateRequest(req, results);
+
+    expect(results[0].iban).toBe('TR330006100519786457841326');
+  });
+
+  test('applies to expanded rows using the nested entity\'s own rules', async () => {
+    const departments = { name: 'Departments', elements: { contact: { type: 'cds.String' } } };
+    const employees = {
+      name: 'Employees',
+      elements: { ...ELEMENTS, department: { type: 'cds.Association', _target: departments } }
+    };
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: {
+        mode: 'enforce',
+        entities: {
+          Employees: { mask: ['iban'], maskRules: { iban: { type: 'partial', keepLeft: 4, keepRight: 4 } } },
+          Departments: { mask: ['contact'], maskRules: { contact: { type: 'email' } } }
+        }
+      }
+    });
+    const results = [{ iban: 'TR330006100519786457841326', department: { contact: 'ahmet@firma.com' } }];
+
+    await srv.simulateRequest({ event: 'READ', entity: 'Employees', target: employees }, results);
+
+    expect(results[0].iban).toBe('TR33******************1326');
+    expect(results[0].department.contact).toBe('a****@firma.com');
+  });
+
+  // The rule lives on the policy, not the Decision, precisely so these two keep publishing the
+  // plain list of names every consumer already parses.
+  test('the Decision still reports fieldsToMask as plain field names', async () => {
+    const decisions = [];
+    const srv = createFakeService();
+    attachInterceptor(srv, {
+      policyDefinition: {
+        mode: 'enforce',
+        entities: { Employees: { mask: ['iban'], maskRules: { iban: { type: 'partial', keepLeft: 4 } } } }
+      },
+      onDecision: (decision) => decisions.push(decision)
+    });
+
+    await srv.simulateRequest(
+      { event: 'READ', entity: 'Employees', target: { name: 'Employees', elements: ELEMENTS } },
+      [{ iban: 'TR330006100519786457841326' }]
+    );
+
+    expect(decisions[0].fieldsToMask).toEqual(['iban']);
+  });
+});

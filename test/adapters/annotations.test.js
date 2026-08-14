@@ -19,6 +19,69 @@ describe('readEntityAnnotations', () => {
     expect(readEntityAnnotations(entityDef)).toEqual({ mask: ['salary'] });
   });
 
+  // `iban @mcp.policy.mask: {type:'partial', keepLeft:4, keepRight:4};` — the same flattening trap
+  // as pseudonymize: CDS never stores the object under the unsuffixed key, so a reader that only
+  // checks `element['@mcp.policy.mask'] === true` sees nothing and leaves the field unprotected.
+  test('a mask annotation carrying a strategy arrives as flattened dotted keys', () => {
+    const entityDef = {
+      elements: {
+        iban: {
+          type: 'cds.String',
+          '@mcp.policy.mask.type': 'partial',
+          '@mcp.policy.mask.keepLeft': 4,
+          '@mcp.policy.mask.keepRight': 4,
+          '@mcp.policy.mask.char': '*'
+        }
+      }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      mask: [{ field: 'iban', type: 'partial', keepLeft: 4, keepRight: 4, char: '*' }]
+    });
+  });
+
+  test('a mask annotation with only a type reads as that type', () => {
+    const entityDef = { elements: { email: { type: 'cds.String', '@mcp.policy.mask.type': 'email' } } };
+    expect(readEntityAnnotations(entityDef)).toEqual({ mask: [{ field: 'email', type: 'email' }] });
+  });
+
+  test('still accepts a nested mask object, which CDS does not emit today', () => {
+    const entityDef = {
+      elements: { iban: { type: 'cds.String', '@mcp.policy.mask': { type: 'partial', keepLeft: 2 } } }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      mask: [{ field: 'iban', type: 'partial', keepLeft: 2 }]
+    });
+  });
+
+  test('a strategy annotation validates through the same rules as package.json', () => {
+    const raw = readEntityAnnotations({
+      elements: { iban: { type: 'cds.String', '@mcp.policy.mask.type': 'partial', '@mcp.policy.mask.keepLeft': 4 } }
+    });
+    expect(validateEntityConfig('Employees', raw)).toMatchObject({
+      mask: ['iban'],
+      maskRules: { iban: { type: 'partial', keepLeft: 4 } }
+    });
+
+    const bad = readEntityAnnotations({
+      elements: { tckn: { type: 'cds.String', '@mcp.policy.mask.type': 'tckn' } }
+    });
+    expect(() => validateEntityConfig('Employees', bad)).toThrow(
+      'entities.Employees.mask.tckn.type must be one of full, partial, email'
+    );
+  });
+
+  test('mixes a plain mask and a strategy mask on one entity', () => {
+    const entityDef = {
+      elements: {
+        salary: { type: 'cds.Decimal', '@mcp.policy.mask': true },
+        email: { type: 'cds.String', '@mcp.policy.mask.type': 'email' }
+      }
+    };
+    expect(readEntityAnnotations(entityDef)).toEqual({
+      mask: ['salary', { field: 'email', type: 'email' }]
+    });
+  });
+
   test('a field annotated with a bare-string pseudonymize type becomes a {field, type} entry', () => {
     const entityDef = { elements: { iban: { type: 'cds.String', '@mcp.policy.pseudonymize': 'iban' } } };
     expect(readEntityAnnotations(entityDef)).toEqual({ pseudonymize: [{ field: 'iban', type: 'iban' }] });
@@ -184,6 +247,25 @@ describe('mergeEntityConfig', () => {
     const merged = mergeEntityConfig('Orders', { maxRows: 500, allowTools: ['FromAnnotation'] }, { mask: ['x'] });
     expect(merged.maxRows).toBe(500);
     expect(merged.allowTools).toEqual(['FromAnnotation']);
+  });
+
+  test('unions mask rules from both sides; the package.json rule wins on the same field', () => {
+    const merged = mergeEntityConfig(
+      'Employees',
+      { mask: ['iban', 'email'], maskRules: { iban: { type: 'partial', keepLeft: 4 }, email: { type: 'email' } } },
+      { mask: ['iban'], maskRules: { iban: { type: 'partial', keepLeft: 2, keepRight: 2 } } }
+    );
+
+    expect(merged.mask.sort()).toEqual(['email', 'iban']);
+    expect(merged.maskRules).toEqual({
+      iban: { type: 'partial', keepLeft: 2, keepRight: 2 },
+      email: { type: 'email' }
+    });
+  });
+
+  test('no maskRules key at all when neither side has one, so an existing config is byte-identical', () => {
+    const merged = mergeEntityConfig('Employees', { mask: ['salary'] }, { mask: ['nationalId'] });
+    expect(merged).not.toHaveProperty('maskRules');
   });
 
   test('throws when the merged result would list the same field under both mask and pseudonymize', () => {

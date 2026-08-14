@@ -189,3 +189,66 @@ describe('lintPolicy — mask placeholder settings', () => {
     expect(lintPolicy({ ...policy, maskTypeSafe: false }, elements).warnings).toEqual([]);
   });
 });
+
+describe('lintPolicy — mask strategies vs field type', () => {
+  test('stays quiet for a strategy on a string field', () => {
+    const findings = lintPolicy(
+      {
+        entities: {
+          Employees: { mask: ['iban', 'email'], maskRules: { iban: { type: 'partial', keepLeft: 4 }, email: { type: 'email' } } }
+        }
+      },
+      { Employees: { iban: STRING, email: STRING } }
+    );
+    expect(findings.errors).toEqual([]);
+    expect(findings.warnings).toEqual([]);
+  });
+
+  // The defect: `salary @mcp.policy.mask: {type:'partial', keepLeft:2}` on a Decimal. The rule
+  // derives a string, the field can't hold one, so the guard quietly falls back to the full
+  // replacement — a payload that looks masked while the configured strategy never ran at all.
+  test('reports an error for a strategy on a non-string field, since the rule cannot apply', () => {
+    const findings = lintPolicy(
+      { entities: { Employees: { mask: ['salary'], maskRules: { salary: { type: 'partial', keepLeft: 2 } } } } },
+      { Employees: { salary: DECIMAL } }
+    );
+    expect(findings.errors).toHaveLength(1);
+    expect(findings.errors[0]).toContain('Employees.salary');
+    expect(findings.errors[0]).toContain('mask type "partial"');
+    expect(findings.errors[0]).toContain('cds.Decimal');
+    // and not the "yields null" warning as well — one finding per field, the more specific one
+    expect(findings.warnings).toEqual([]);
+  });
+
+  test('reports the same for a UUID field, which is a string in JS but not in $metadata', () => {
+    const findings = lintPolicy(
+      { entities: { Employees: { mask: ['personId'], maskRules: { personId: { type: 'partial', keepLeft: 4 } } } } },
+      { Employees: { personId: UUID } }
+    );
+    expect(findings.errors).toHaveLength(1);
+    expect(findings.errors[0]).toContain('cds.UUID');
+  });
+
+  test('a plain full mask on the same entity still only warns', () => {
+    const findings = lintPolicy(
+      {
+        entities: {
+          Employees: { mask: ['salary', 'bonus'], maskRules: { salary: { type: 'partial', keepLeft: 2 } } }
+        }
+      },
+      { Employees: { salary: DECIMAL, bonus: DECIMAL } }
+    );
+    expect(findings.errors).toHaveLength(1);
+    expect(findings.warnings).toHaveLength(1);
+    expect(findings.warnings[0]).toContain('Employees.bonus');
+  });
+
+  test('says nothing about a strategy field it has no type for', () => {
+    const findings = lintPolicy(
+      { entities: { Employees: { mask: ['iban'], maskRules: { iban: { type: 'partial' } } } } },
+      {}
+    );
+    expect(findings.errors).toEqual([]);
+    expect(findings.warnings).toEqual([]);
+  });
+});
