@@ -665,4 +665,70 @@ describe('registerCapMcpGuard', () => {
       expect(onDecision).toHaveBeenCalledTimes(1);
     });
   });
+
+  // Reported whether or not the lint was asked for, unlike every other finding: the others are
+  // about a payload being shaped wrongly, this one is about the policy silently not applying.
+  describe('identity scoping vs the configured auth strategy', () => {
+    let warnSpy;
+
+    beforeEach(() => {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => warnSpy.mockRestore());
+
+    /** createFakeCds() knows nothing about cds.env — bolt on just the part this reads. */
+    const withAuth = (cds, kind) => Object.assign(cds, { env: { requires: { auth: { kind } } } });
+    const usersPolicy = { mode: 'enforce', users: ['mcp-agent'], entities: { Orders: { mask: ['CreditCard'] } } };
+
+    const boot = (kind, policyDefinition = usersPolicy, extra = {}) => {
+      const Orders = createFakeService();
+      const cds = withAuth(createFakeCds(tmpDir, { Orders }), kind);
+      registerCapMcpGuard(cds, { policyDefinition, ...extra });
+      cds.fireServed();
+      return warnSpy.mock.calls.map((c) => String(c[0]));
+    };
+
+    test('warns with "users" set and a development auth strategy, without lint being enabled', () => {
+      const warnings = boot('mocked');
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('[cap-mcp-guard] warning:');
+      expect(warnings[0]).toContain('"mocked"');
+      expect(warnings[0]).toContain('"mcp-agent"');
+    });
+
+    test('stays quiet with a token-validating strategy', () => {
+      expect(boot('xsuaa')).toEqual([]);
+    });
+
+    test('stays quiet when the policy does not scope by identity', () => {
+      expect(boot('mocked', { mode: 'enforce', services: ['AgentService'], entities: {} })).toEqual([]);
+    });
+
+    test('stays quiet when cds exposes no auth config at all', () => {
+      const Orders = createFakeService();
+      const cds = createFakeCds(tmpDir, { Orders });
+      registerCapMcpGuard(cds, { policyDefinition: usersPolicy });
+      cds.fireServed();
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    // How a production pipeline makes sure the warning was acted on rather than scrolled past.
+    test('lint.strict turns it into a refusal to start', () => {
+      expect(() => boot('mocked', usersPolicy, { lint: { strict: true } })).toThrow(
+        /refusing to start with lint\.strict set/
+      );
+    });
+
+    test('lint.strict does not refuse when the strategy is trustworthy', () => {
+      expect(() => boot('ias', usersPolicy, { lint: { strict: true } })).not.toThrow();
+    });
+
+    test('lint: true alone warns without refusing', () => {
+      expect(() => boot('mocked', usersPolicy, { lint: true })).not.toThrow();
+      expect(warnSpy).toHaveBeenCalled();
+    });
+  });
 });

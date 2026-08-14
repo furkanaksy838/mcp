@@ -1,6 +1,6 @@
 'use strict';
 
-const { lintPolicy, formatLintReport } = require('../../lib/policy/lint');
+const { lintPolicy, lintIdentityScoping, formatLintReport } = require('../../lib/policy/lint');
 
 const STRING = { type: 'cds.String' };
 const UUID = { type: 'cds.UUID' };
@@ -250,5 +250,55 @@ describe('lintPolicy — mask strategies vs field type', () => {
     );
     expect(findings.errors).toEqual([]);
     expect(findings.warnings).toEqual([]);
+  });
+});
+
+describe('lintIdentityScoping', () => {
+  const withUsers = { users: ['mcp-agent'] };
+
+  // The failure this exists for: under CAP's mocked auth, `users` decides policy from a name that
+  // nothing established. A request presenting any other name reads every masked field in the clear,
+  // the audit log calls it plainly allowed with nothing to mask, and no part of a running system
+  // says the policy stopped applying.
+  test('warns when identity scoping rests on a development auth strategy', () => {
+    for (const kind of ['mocked', 'basic', 'dummy', 'mock']) {
+      const warning = lintIdentityScoping(withUsers, kind);
+      expect(warning).toBeDefined();
+      expect(warning).toContain(`"${kind}"`);
+      expect(warning).toContain('does not verify who the caller is');
+    }
+  });
+
+  test('names the scoped identities and both ways out', () => {
+    const warning = lintIdentityScoping({ users: ['mcp-agent', 'batch-job'] }, 'mocked');
+    expect(warning).toContain('"mcp-agent", "batch-job"');
+    expect(warning).toContain('XSUAA');
+    expect(warning).toContain('its own entity');
+  });
+
+  test('is case-insensitive about the strategy name', () => {
+    expect(lintIdentityScoping(withUsers, 'Mocked')).toBeDefined();
+  });
+
+  test('says nothing for a token-validating strategy', () => {
+    for (const kind of ['xsuaa', 'ias', 'jwt']) {
+      expect(lintIdentityScoping(withUsers, kind)).toBeUndefined();
+    }
+  });
+
+  // A project pointing `impl` at its own auth module made a deliberate choice; a warning that fires
+  // on every bespoke strategy is one people learn to scroll past.
+  test('says nothing for an unrecognized (custom) strategy', () => {
+    expect(lintIdentityScoping(withUsers, 'my-company-gateway')).toBeUndefined();
+  });
+
+  test('says nothing when identity plays no part in the policy', () => {
+    expect(lintIdentityScoping({}, 'mocked')).toBeUndefined();
+    expect(lintIdentityScoping({ users: [] }, 'mocked')).toBeUndefined();
+    expect(lintIdentityScoping({ services: ['AgentService'] }, 'mocked')).toBeUndefined();
+  });
+
+  test('says nothing when the auth strategy is unknown to it', () => {
+    expect(lintIdentityScoping(withUsers, undefined)).toBeUndefined();
   });
 });

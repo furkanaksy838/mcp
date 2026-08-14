@@ -665,10 +665,35 @@ policy at all:
 Authenticate your MCP runtime as that technical user (via XSUAA/IAS, a service key bound to
 the CAP app) so its requests carry that identity; your UI's human users authenticate
 normally and are never in the list, so they always see real data through the same service and
-the same endpoint. This is only as secure as your CAP app's auth strategy — it requires a
-real, verified identity provider (XSUAA/IAS/JWT) in production. `mocked` auth (fine for local
-dev, as `examples/bookshop` uses) lets `req.user.id` be set by an untrusted client-supplied
-header, which defeats this entirely.
+the same endpoint.
+
+**This is only as trustworthy as whatever established that identity, and the guard now says so at
+startup.** With `"users"` set and CAP running a development auth strategy (`mocked`, `basic`,
+`dummy`), you get:
+
+```text
+[cap-mcp-guard] warning: "users" scopes this policy by caller identity ("mcp-agent"), but the
+  configured auth strategy is "mocked", which does not verify who the caller is — a request
+  presenting any other name reads every masked field in the clear, and nothing at runtime reports
+  that it did.
+```
+
+That is not a theoretical caveat. CAP's mocked user list is seeded with `"*": true`, so a request
+authenticating as a name nobody configured is accepted as that name:
+
+```console
+$ curl -u mcp-agent:mcp-secret     .../Employees   # in the "users" list
+  nationalId: 123******01     salary: ***MASKED***
+$ curl -u whatever-i-typed:       .../Employees   # not configured anywhere
+  nationalId: 12345678901     salary: 85000.00
+```
+
+The warning prints whether or not `"lint"` is enabled — every other finding is about a payload
+being shaped wrongly, this one is about the policy silently not applying at all, so someone who
+never asked for the lint is exactly who needs telling. `"lint": { "strict": true }` upgrades it to
+a refusal to start, which is how a production pipeline makes sure it was acted on rather than
+scrolled past. A strategy the guard doesn't recognize (your own `impl`) is left alone — that was a
+deliberate choice by someone who knew what they were doing.
 
 Because both audiences read the same entity here, a field has one type for both of them and there
 is no agent-side projection to `cast` in. That is what `"maskTypeSafe": false` is for — see
@@ -733,9 +758,13 @@ duplicates. If even that is too much, use `mask` — and if the *shape* matters 
 you the country), use `type: "custom"` or exclude the field.
 
 **Prefer endpoint scoping over identity scoping.** `"users"` is only as trustworthy as the app's
-authentication: with CAP's `mocked` auth an agent can simply present another user's name. Splitting
-the agent's surface into its own service or its own entity puts the boundary in the URL, where
-there is nothing to impersonate.
+authentication: with CAP's `mocked` auth an agent can simply present another user's name — and it
+need not even be a name you configured, since CAP seeds its mock user list with `"*": true`. The
+guard warns about exactly this combination at startup (see [Scoping the guard to specific
+users](#scoping-the-guard-to-specific-users)), but a warning is not a control. Splitting the agent's
+surface into its own service or its own entity puts the boundary in the URL, where there is nothing
+to impersonate. Note also what identity scoping does *not* narrow: the agent still reaches every
+entity the service serves, masked — an agent-facing projection reaches only what it lists.
 
 ## Try it
 
